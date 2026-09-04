@@ -1,0 +1,2 @@
+lxml==6.1.1
+dita-convert==1.4.9

@@ -1,0 +1,42 @@
+:_mod-docs-content-type: REFERENCE
+
+[id="supported-rbac-rest-api-endpoints"]
+= Roles
+
+[role="_abstract"]
+Reference information about RBAC REST API endpoints for managing roles.
+
+The RBAC REST API provides endpoints for managing roles.
+
+== Roles
+
+[GET] /api/permission/roles::
+Returns all roles in Developer Hub.
++
+Example response (JSON):
++
+[source,json]
+----
+[
+  {
+    "memberReferences": ["user:default/username"],
+    "name": "role:default/guests"
+  }
+]
+----
+
+[GET] /api/permission/roles/__<kind>__/__<namespace>__/__<name>__::
+Returns information for a single role.
+
+[cols="15,45,15,25",options="header"]
+|===
+|Name |Description |Type |Presence
+|`body` |The `memberReferences` of the new role. |Request body |Required
+|===
+
+Example response:
+
+[source]
+----
+201 Created
+----

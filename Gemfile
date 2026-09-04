@@ -1,0 +1,5 @@
+source 'https://rubygems.org'
+gem 'asciidoctor', '2.0.26'
+gem 'asciidoctor-dita-topic', '1.5.3'
+gem 'logger', '1.7.0'
+gem 'securerandom', '0.4.1'

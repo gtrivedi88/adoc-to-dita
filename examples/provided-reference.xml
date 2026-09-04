@@ -1,0 +1,311 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE reference PUBLIC "-//OASIS//DTD DITA Reference//EN" "reference.dtd">
+<reference id="supported-rbac-rest-api-endpoints">
+  <title>Roles</title>
+  <shortdesc>Reference information about RBAC REST API endpoints for managing roles.</shortdesc>
+  <refbody>
+    <section>
+      <p>The RBAC REST API provides endpoints for managing roles in the Developer Hub and for retrieving information about the roles and policies.</p>
+    </section>
+    <section id="_roles">
+      <p>The RBAC REST API supports the following endpoints for managing roles in the Red Hat Developer Hub.</p>
+      <dl>
+        <dlentry>
+          <dt>[GET] /api/permission/roles</dt>
+          <dd>
+            <p>Returns all roles in Developer Hub.</p>
+            <p>Example response (JSON):</p>
+            <codeblock outputclass="language-json">[
+  {
+    "memberReferences": ["user:default/username"],
+    "name": "role:default/guests"
+  },
+  {
+    "memberReferences": [
+      "group:default/groupname",
+      "user:default/username"
+    ],
+    "name": "role:default/rbac_admin"
+  }
+]</codeblock>
+          </dd>
+        </dlentry>
+        <dlentry>
+          <dt>[GET] /api/permission/roles/<i>&lt;kind&gt;</i>/<i>&lt;namespace&gt;</i>/<i>&lt;name&gt;</i></dt>
+          <dd>
+            <p>Returns information for a single role in Developer Hub.</p>
+            <p>Example response (JSON):</p>
+            <codeblock outputclass="language-json">[
+  {
+    "memberReferences": [
+      "group:default/groupname",
+      "user:default/username"
+    ],
+    "name": "role:default/rbac_admin"
+  }
+]</codeblock>
+          </dd>
+        </dlentry>
+        <dlentry>
+          <dt>[POST] /api/permission/roles/<i>&lt;kind&gt;</i>/<i>&lt;namespace&gt;</i>/<i>&lt;name&gt;</i></dt>
+          <dd>
+            <p>Creates a role in Developer Hub.</p>
+          </dd>
+        </dlentry>
+      </dl>
+      <table>
+        <tgroup cols="4">
+          <colspec colname="col_1" colwidth="15*"/>
+          <colspec colname="col_2" colwidth="45*"/>
+          <colspec colname="col_3" colwidth="15*"/>
+          <colspec colname="col_4" colwidth="25*"/>
+          <thead>
+            <row>
+              <entry>Name</entry>
+              <entry>Description</entry>
+              <entry>Type</entry>
+              <entry>Presence</entry>
+            </row>
+          </thead>
+          <tbody>
+            <row>
+              <entry>
+                <p> <codeph>body</codeph> </p>
+              </entry>
+              <entry>
+                <p>The <codeph>memberReferences</codeph>, <codeph>group</codeph>, <codeph>namespace</codeph>, and <codeph>name</codeph> the new role to be created.</p>
+              </entry>
+              <entry>
+                <p>Request body</p>
+              </entry>
+              <entry>
+                <p>Required</p>
+              </entry>
+            </row>
+          </tbody>
+        </tgroup>
+      </table>
+      <p>Example request body (JSON):</p>
+      <p>+</p>
+      <codeblock outputclass="language-json">{
+  "memberReferences": ["group:default/test"],
+  "name": "role:default/test_admin"
+}</codeblock>
+      <p>Example response:</p>
+      <p>+</p>
+      <codeblock>201 Created</codeblock>
+      <dl>
+        <dlentry>
+          <dt>[PUT] /api/permission/roles/<i>&lt;kind&gt;</i>/<i>&lt;namespace&gt;</i>/<i>&lt;name&gt;</i></dt>
+          <dd>
+            <p>Updates <codeph>memberReferences</codeph>, <codeph>kind</codeph>, <codeph>namespace</codeph>, or <codeph>name</codeph> for a role in Developer Hub.</p>
+          </dd>
+        </dlentry>
+      </dl>
+      <p>Request parameters: The request body contains the <codeph>oldRole</codeph> and <codeph>newRole</codeph> objects:</p>
+      <table>
+        <tgroup cols="4">
+          <colspec colname="col_1" colwidth="15*"/>
+          <colspec colname="col_2" colwidth="45*"/>
+          <colspec colname="col_3" colwidth="15*"/>
+          <colspec colname="col_4" colwidth="25*"/>
+          <thead>
+            <row>
+              <entry>Name</entry>
+              <entry>Description</entry>
+              <entry>Type</entry>
+              <entry>Presence</entry>
+            </row>
+          </thead>
+          <tbody>
+            <row>
+              <entry>
+                <p> <codeph>body</codeph> </p>
+              </entry>
+              <entry>
+                <p>The <codeph>memberReferences</codeph>, <codeph>group</codeph>, <codeph>namespace</codeph>, and <codeph>name</codeph> the new role to be created.</p>
+              </entry>
+              <entry>
+                <p>Request body</p>
+              </entry>
+              <entry>
+                <p>Required</p>
+              </entry>
+            </row>
+          </tbody>
+        </tgroup>
+      </table>
+      <p>Example request body (JSON):</p>
+      <p>+</p>
+      <codeblock outputclass="language-json">{
+  "oldRole": {
+    "memberReferences": ["group:default/test"],
+    "name": "role:default/test_admin"
+  },
+  "newRole": {
+    "memberReferences": ["group:default/test", "user:default/test2"],
+    "name": "role:default/test_admin"
+  }
+}</codeblock>
+      <p>Example response:</p>
+      <p>+</p>
+      <codeblock>200 OK</codeblock>
+      <dl>
+        <dlentry>
+          <dt>[DELETE] /api/permission/roles/<i>&lt;kind&gt;</i>/<i>&lt;namespace&gt;</i>/<i>&lt;name&gt;</i>?memberReferences=&lt;VALUE&gt;</dt>
+          <dd>
+            <p>Deletes the specified user or group from a role in Developer Hub.</p>
+          </dd>
+        </dlentry>
+      </dl>
+      <table>
+        <tgroup cols="4">
+          <colspec colname="col_1" colwidth="15*"/>
+          <colspec colname="col_2" colwidth="45*"/>
+          <colspec colname="col_3" colwidth="15*"/>
+          <colspec colname="col_4" colwidth="25*"/>
+          <thead>
+            <row>
+              <entry>Name</entry>
+              <entry>Description</entry>
+              <entry>Type</entry>
+              <entry>Presence</entry>
+            </row>
+          </thead>
+          <tbody>
+            <row>
+              <entry>
+                <p> <codeph>kind</codeph> </p>
+              </entry>
+              <entry>
+                <p>Kind of the entity</p>
+              </entry>
+              <entry>
+                <p>String</p>
+              </entry>
+              <entry>
+                <p>Required</p>
+              </entry>
+            </row>
+            <row>
+              <entry>
+                <p> <codeph>namespace</codeph> </p>
+              </entry>
+              <entry>
+                <p>Namespace of the entity</p>
+              </entry>
+              <entry>
+                <p>String</p>
+              </entry>
+              <entry>
+                <p>Required</p>
+              </entry>
+            </row>
+            <row>
+              <entry>
+                <p> <codeph>name</codeph> </p>
+              </entry>
+              <entry>
+                <p>Name of the entity</p>
+              </entry>
+              <entry>
+                <p>String</p>
+              </entry>
+              <entry>
+                <p>Required</p>
+              </entry>
+            </row>
+            <row>
+              <entry>
+                <p> <codeph>memberReferences</codeph> </p>
+              </entry>
+              <entry>
+                <p>Associated group information</p>
+              </entry>
+              <entry>
+                <p>String</p>
+              </entry>
+              <entry>
+                <p>Required</p>
+              </entry>
+            </row>
+          </tbody>
+        </tgroup>
+      </table>
+      <p>Example response:</p>
+      <p>+</p>
+      <codeblock>204</codeblock>
+      <dl>
+        <dlentry>
+          <dt>[DELETE] /api/permission/roles/<i>&lt;kind&gt;</i>/<i>&lt;namespace&gt;</i>/<i>&lt;name&gt;</i></dt>
+          <dd>
+            <p>Deletes a specified role from Developer Hub.</p>
+          </dd>
+        </dlentry>
+      </dl>
+      <table>
+        <tgroup cols="4">
+          <colspec colname="col_1" colwidth="15*"/>
+          <colspec colname="col_2" colwidth="45*"/>
+          <colspec colname="col_3" colwidth="15*"/>
+          <colspec colname="col_4" colwidth="25*"/>
+          <thead>
+            <row>
+              <entry>Name</entry>
+              <entry>Description</entry>
+              <entry>Type</entry>
+              <entry>Presence</entry>
+            </row>
+          </thead>
+          <tbody>
+            <row>
+              <entry>
+                <p> <codeph>kind</codeph> </p>
+              </entry>
+              <entry>
+                <p>Kind of the entity</p>
+              </entry>
+              <entry>
+                <p>String</p>
+              </entry>
+              <entry>
+                <p>Required</p>
+              </entry>
+            </row>
+            <row>
+              <entry>
+                <p> <codeph>namespace</codeph> </p>
+              </entry>
+              <entry>
+                <p>Namespace of the entity</p>
+              </entry>
+              <entry>
+                <p>String</p>
+              </entry>
+              <entry>
+                <p>Required</p>
+              </entry>
+            </row>
+            <row>
+              <entry>
+                <p> <codeph>name</codeph> </p>
+              </entry>
+              <entry>
+                <p>Name of the entity</p>
+              </entry>
+              <entry>
+                <p>String</p>
+              </entry>
+              <entry>
+                <p>Required</p>
+              </entry>
+            </row>
+          </tbody>
+        </tgroup>
+      </table>
+      <p>Example response:</p>
+      <p>+</p>
+      <codeblock>204</codeblock>
+    </section>
+  </refbody>
+</reference>

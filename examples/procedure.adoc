@@ -1,0 +1,22 @@
+:_mod-docs-content-type: PROCEDURE
+
+[id="install-plugin"]
+= Install a plugin
+
+[role="_abstract"]
+Install a plugin in your workspace.
+
+.Prerequisites
+* You have access to the workspace.
+
+.Procedure
+. Open the plugin directory.
+. Run the command:
++
+[source,bash]
+----
+npm install example-plugin
+----
+
+.Verification
+* Confirm the plugin appears in the workspace.

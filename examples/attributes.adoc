@@ -1,0 +1,5 @@
+:product: Red Hat Developer Hub
+:product-short: Developer Hub
+:context: standalone
+:a-platform-generic: an OpenShift
+:configuring-book-link: link:https://docs.redhat.com/en/documentation/red_hat_developer_hub/1.10/html-single/configuring_red_hat_developer_hub/index

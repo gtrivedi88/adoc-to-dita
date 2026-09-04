@@ -1,0 +1,27 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    asciidoctor (2.0.26)
+    asciidoctor-dita-topic (1.5.3)
+      asciidoctor (~> 2.0, >= 2.0.26)
+    logger (1.7.0)
+    securerandom (0.4.1)
+
+PLATFORMS
+  ruby
+  x86_64-linux
+
+DEPENDENCIES
+  asciidoctor (= 2.0.26)
+  asciidoctor-dita-topic (= 1.5.3)
+  logger (= 1.7.0)
+  securerandom (= 0.4.1)
+
+CHECKSUMS
+  asciidoctor (2.0.26) sha256=16e3accf1fc206bbd6335848649d7fd65f31d2daa60d85af13d47a8ee4b071c1
+  asciidoctor-dita-topic (1.5.3) sha256=20019d24a333658d3dd2c3297558ec6f45f81b5d9a7c11fa047db99e92c3338a
+  logger (1.7.0) sha256=196edec7cc44b66cfb40f9755ce11b392f21f7967696af15d274dde7edff0203
+  securerandom (0.4.1) sha256=cc5193d414a4341b6e225f0cb4446aceca8e50d5e1888743fac16987638ea0b1
+
+BUNDLED WITH
+  4.0.16

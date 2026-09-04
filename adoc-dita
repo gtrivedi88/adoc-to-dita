@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if [ -x "$project_dir/.venv/bin/python" ]; then
+  parser_python="$project_dir/.venv/bin/python"
+else
+  parser_python=python3
+fi
+export PYTHONPATH="$project_dir${PYTHONPATH:+:$PYTHONPATH}"
+exec "$parser_python" -m adoc_dita.cli "$@"

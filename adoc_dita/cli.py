@@ -30,6 +30,8 @@ def main(argv=None):
     one.add_argument("--root", help="Allowed input root for includes (default: input file directory)")
     one.add_argument("--filename", default="document.adoc", help="Stable filename for stdin")
     one.add_argument("--json", action="store_true", help="Return XML plus diagnostics as JSON")
+    one.add_argument("--repository", help="Local repository for inherited guide attributes and cross-topic links")
+    one.add_argument("--profile", help="Inclusion key from --json when a guide includes the same module more than once")
     diff = sub.add_parser("compare", help="Compare branch tips, tags, or commits")
     diff.add_argument("repository", help="Local Git repository or https://github.com/OWNER/REPO")
     diff.add_argument("--base", required=True)
@@ -37,6 +39,7 @@ def main(argv=None):
     diff.add_argument("-o", "--output", required=True, help="New or empty output directory")
     diff.add_argument("--include", action="append", help="Topic path pattern; repeatable (default: *.adoc)")
     for command in [one, diff]:
+        command.add_argument("--guide", help="Guide entry file relative to the repository; follows its native include and attribute rules")
         command.add_argument("-a", "--attribute", action="append", default=[], help="Attribute name=value; repeatable")
         command.add_argument("--attribute-file", action="append", help="Definition file relative to input root; repeatable")
         command.add_argument("--type", choices=["auto", "concept", "task", "reference"], default="auto")
@@ -55,7 +58,21 @@ def main(argv=None):
             return 0
         attributes = parse_attributes(args.attribute)
         if args.command == "convert":
-            if args.file == "-":
+            if args.repository:
+                from .context import convert_in_repository
+                if args.attribute_file and len(args.attribute_file) > 1:
+                    raise ValueError('Repository conversion accepts one shared attributes file')
+                root = Path(args.repository).expanduser().resolve()
+                file = Path(args.file).resolve() if args.file != '-' else None
+                shared = str(root / args.attribute_file[0]) if args.attribute_file else None
+                result = convert_in_repository(file.read_text(encoding='utf-8') if file else sys.stdin.read(),
+                                               repository=root, filename=file.name if file else args.filename,
+                                               source_path=file.relative_to(root).as_posix() if file else None,
+                                               guide=args.guide, profile=args.profile, attributes=attributes,
+                                               attribute_file=shared, kind=args.type)
+            elif args.guide or args.profile:
+                raise ValueError('Use --repository with --guide or --profile for content conversion')
+            elif args.file == "-":
                 if args.attribute_file:
                     raise ValueError("Use inline -a attributes for stdin, or convert a file with --root")
                 result = convert_text(sys.stdin.read(), filename=args.filename, attributes=attributes, kind=args.type)
@@ -66,6 +83,10 @@ def main(argv=None):
                                        attribute_files=args.attribute_file, kind=args.type)[0]
             for diagnostic in result["diagnostics"]:
                 print(f'{diagnostic["severity"]}: {diagnostic["message"]}', file=sys.stderr)
+            if result['status'] == 'selection':
+                print(result['selection_message'], file=sys.stderr)
+                for choice in result.get('guide_choices', []):
+                    print(f"  --guide {choice['guide']} --profile {choice['key']}  ({choice['context']})", file=sys.stderr)
             if args.json:
                 print(json.dumps(result, indent=2, ensure_ascii=False))
             elif result.get("xml"):
@@ -78,12 +99,12 @@ def main(argv=None):
                     print(f"Wrote {output}", file=sys.stderr)
                 else:
                     print(result["xml"], end="")
-            return 2 if result["status"] == "error" else 0
+            return 2 if result["status"] in ("error", "selection") else 0
         output = Path(args.output)
         if output.exists() and (not output.is_dir() or any(output.iterdir())):
             raise ValueError("Choose a new or empty output directory")
         report = compare(args.repository, args.base, args.target, patterns=args.include, attributes=attributes,
-                         attribute_files=args.attribute_file, kind=args.type,
+                         attribute_files=args.attribute_file, kind=args.type, guide=args.guide,
                          progress=lambda message: print(message, file=sys.stderr))
         save_report(report, output)
         print(json.dumps(report["summary"]))

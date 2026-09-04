@@ -62,6 +62,11 @@ def convert_one(request)
   doc = Asciidoctor.load input, safe: :unsafe, base_dir: File.dirname(file), backend: 'dita-topic',
     attributes: attributes, logger: logger, sourcemap: true, header_footer: true,
     docfile: file
+  # A module was a section inside its guide. Its own heading is its topic title;
+  # an inherited guide-level :title: must remain available for prose substitutions.
+  if request['use_header_title']
+    doc.define_singleton_method(:doctitle) { |_options = {}| first_section&.title }
+  end
   raise 'Add a document title, for example: = Install the plugin' unless doc.doctitle
   # Never allow the upstream converter's SecureRandom fallback for pasted text.
   doc.id ||= 'topic-' + Digest::SHA256.hexdigest(path)[0, 16]
@@ -86,5 +91,7 @@ rescue StandardError => e
     dependencies: Thread.current[:dependencies] || [] }
 end
 
-requests = JSON.parse(STDIN.read)
-STDOUT.write(JSON.generate(requests.map { |request| convert_one(request) }))
+if $PROGRAM_NAME == __FILE__
+  requests = JSON.parse(STDIN.read)
+  STDOUT.write(JSON.generate(requests.map { |request| convert_one(request) }))
+end

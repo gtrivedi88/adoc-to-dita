@@ -87,16 +87,31 @@ def snapshot(repo, commit, destination):
     if len(data) > 300 * 1024 * 1024:
         raise ValueError("Snapshot exceeds the 300 MB limit")
     with tarfile.open(fileobj=io.BytesIO(data)) as archive:
-        # No symlink or hardlink extraction, no executable repository code.
+        links = []
         for member in archive:
             path = PurePosixPath(member.name)
             if path.is_absolute() or ".." in path.parts:
                 raise ValueError("Unsafe path in Git archive")
+            if member.issym():
+                links.append((path, member.linkname))
             if not member.isfile():
                 continue
             output = destination.joinpath(*path.parts)
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_bytes(archive.extractfile(member).read())
+        # Preserve repository include aliases, but never links outside the snapshot.
+        for path, target in links:
+            output = destination.joinpath(*path.parts)
+            if Path(target).is_absolute() or not (output.parent / target).resolve().is_relative_to(destination.resolve()):
+                continue
+            if output.exists() or output.is_symlink():
+                continue
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.symlink_to(target)
+        for path, _ in links:
+            output = destination.joinpath(*path.parts)
+            if output.is_symlink() and not output.resolve().is_relative_to(destination.resolve()):
+                output.unlink()
 
 
 def changed_paths(repo, base, target):
@@ -131,7 +146,7 @@ def topic_paths(root, patterns):
     return selected
 
 
-def compare(repository, base, target, *, patterns=None, attributes=None, attribute_files=None, kind="auto", progress=None):
+def compare(repository, base, target, *, patterns=None, attributes=None, attribute_files=None, kind="auto", progress=None, guide=None):
     progress = progress or (lambda message: None)
     patterns = patterns or ["*.adoc"]
     progress("Resolving the selected Git snapshots…")
@@ -140,7 +155,7 @@ def compare(repository, base, target, *, patterns=None, attributes=None, attribu
     touched = {p for change in changes for p in [change["before"], change["after"]] if p}
     report = {"format_version": 1, "repository": str(repository), "base": {"ref": base, "commit": base_sha},
               "target": {"ref": target, "commit": target_sha}, "settings": {"patterns": patterns, "attributes": attributes or {},
-              "attribute_files": attribute_files, "topic_type": kind},
+              "attribute_files": attribute_files, "topic_type": kind, "guide": guide},
               "toolchain": {"adoc-dita": "0.1.0", "asciidoctor": "2.0.26", "dita-topic": "1.5.3", "dita-convert": "1.4.9", "dita_schema": "1.3-errata02"},
               "changes": [], "files": [], "notes": []}
     if base_sha == target_sha:
@@ -155,13 +170,30 @@ def compare(repository, base, target, *, patterns=None, attributes=None, attribu
             root.mkdir()
             snapshot(repo, commit, root)
         selected = set(topic_paths(roots[0], patterns)) | set(topic_paths(roots[1], patterns))
+        guide_data = {}
+        if guide:
+            from .context import RepositoryContext, convert_repository_files
+            included = set()
+            for root in roots:
+                index = RepositoryContext(root)
+                inspections = index.inspect([guide], attributes, (attribute_files or [None])[0])
+                included.update(o['path'] for i in inspections for o in i['occurrences'])
+                guide_data[root] = (index, inspections)
+            if not included:
+                raise ValueError('The guide has no active topics in either snapshot. Check the guide path and conditional attributes.')
+            selected &= included
         for label, root in zip(["baseline", "target"], roots):
             # A title removed in one snapshot is an invalid topic, not a deleted file.
             paths = sorted(path for path in selected if (root / path).is_file())
             # Auto-load the RHDH shared definitions only when present in that snapshot.
             attrs_files = attribute_files if attribute_files is not None else (["artifacts/attributes.adoc"] if (root / "artifacts/attributes.adoc").is_file() else [])
             progress(f"Converting {len(paths)} {label} topics and checking dependencies…")
-            items = convert_files(root, paths, attributes=attributes, attribute_files=attrs_files, kind=kind) if paths else []
+            if guide:
+                index, inspections = guide_data[root]
+                items = convert_repository_files(root, paths, guide=guide, attributes=attributes,
+                                                 attribute_files=attribute_files, kind=kind, index=index, inspections=inspections)
+            else:
+                items = convert_files(root, paths, attributes=attributes, attribute_files=attrs_files, kind=kind) if paths else []
             outputs.append({item["path"]: item for item in items})
             sources.append({path: (root / path).read_text(encoding="utf-8") for path in paths})
         old, new = outputs

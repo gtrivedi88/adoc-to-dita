@@ -8,6 +8,7 @@ from urllib.parse import urlsplit, parse_qs
 
 from .cli import parse_attributes
 from .converter import convert_text
+from .context import convert_in_repository, infer_repository, SourceNotFoundError
 from .repository import compare, refs
 from .report import zip_report
 
@@ -80,15 +81,29 @@ def serve(port=8765):
                     return self.respond(200, {"refs": refs(data["repository"])})
                 if self.path == "/api/convert":
                     with conversion_lock:
-                        result = convert_text(data["source"], filename=data.get("filename", "document.adoc"),
-                                              attributes=parse_attributes(data.get("attributes", "").splitlines()), kind=data.get("type", "auto"),
-                                              attribute_file=data.get("attribute_file", "").strip() or None)
+                        options = dict(filename=data.get("filename", "document.adoc"),
+                                       attributes=parse_attributes(data.get("attributes", "").splitlines()), kind=data.get("type", "auto"))
+                        attribute_file = data.get("attribute_file", "").strip() or None
+                        repository = data.get('local_repository', '').strip() or infer_repository(attribute_file)
+                        if repository:
+                            try:
+                                result = convert_in_repository(data['source'], repository=repository, **options,
+                                                               source_path=data.get('source_path') or None,
+                                                               guide=data.get('guide') or None, profile=data.get('profile') or None,
+                                                               attribute_file=attribute_file)
+                            except SourceNotFoundError:
+                                if data.get('local_repository', '').strip() or data.get('source_path') or data.get('guide'):
+                                    raise
+                                result = convert_text(data['source'], **options, attribute_file=attribute_file)
+                        else:
+                            result = convert_text(data['source'], **options, attribute_file=attribute_file)
                     return self.respond(200, result)
                 if self.path == "/api/compare":
                     options = dict(repository=data["repository"], base=data["base"], target=data["target"],
                                    patterns=data.get("patterns") or None,
                                    attributes=parse_attributes(data.get("attributes", "").splitlines()),
-                                   attribute_files=data.get("attribute_files"), kind=data.get("type", "auto"))
+                                   attribute_files=data.get("attribute_files"), kind=data.get("type", "auto"),
+                                   guide=data.get('guide', '').strip() or None)
                     with jobs_lock:
                         if any(job["status"] == "running" for job in jobs.values()):
                             return self.respond(409, {"error": "A comparison is already running"})

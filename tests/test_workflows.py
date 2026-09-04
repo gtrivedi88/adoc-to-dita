@@ -163,6 +163,7 @@ class ComparisonTests(unittest.TestCase):
         git(self.repo, 'init', '-b', 'main')
         git(self.repo, 'config', 'user.name', 'Test Writer')
         git(self.repo, 'config', 'user.email', 'test@example.invalid')
+        git(self.repo, 'config', 'commit.gpgsign', 'false')
         self.write('artifacts/attributes.adoc', ':product: One\n')
         self.write('modules/changed.adoc', '= Changed\n\nOriginal text.\n')
         self.write('modules/dependent.adoc', '= Dependent\n\n{product}\n\ninclude::../snippets/shared.adoc[]\n')

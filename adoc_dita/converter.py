@@ -5,11 +5,12 @@ import functools
 import hashlib
 import json
 import os
+import posixpath
 from pathlib import Path
 import re
 import subprocess
 import tempfile
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from lxml import etree
 from dita import convert as dita_convert
@@ -28,7 +29,7 @@ def xml_name(path):
     return str(Path(path).with_suffix(".xml")).replace(os.sep, "/")
 
 
-def finalize(raw, kind="auto"):
+def finalize(raw, kind="auto", references=None):
     result = {k: v for k, v in raw.items() if k != "content_type"}
     result["output_path"] = xml_name(raw["path"])
     detected = KINDS.get((raw.get("content_type") or "").upper())
@@ -55,6 +56,23 @@ def finalize(raw, kind="auto"):
         for error in transform.error_log:
             diagnostics.append({"severity": "error", "message": str(error.message)})
         root = transformed.getroot()
+        # A guide's native ID registry proves which module owns a cross-topic anchor.
+        targets = {}
+        for ref in references or []:
+            targets.setdefault(ref['id'], []).append(ref['path'])
+        resolved = []
+        for node in root.xpath('//*[@href]'):
+            href = node.get('href')
+            if href.startswith('#') and len(targets.get(href[1:], [])) == 1:
+                target = targets[href[1:]][0]
+                if target != raw['path']:
+                    relative = posixpath.relpath(xml_name(target), posixpath.dirname(xml_name(raw['path'])) or '.')
+                    node.set('href', quote(relative, safe='/') + href)
+                    node.set('format', 'dita')
+                    resolved.append(dict(original=href, href=node.get('href'), source_path=target, topic_id=href[1:]))
+        resolved_ids = {item['original'] for item in resolved}
+        diagnostics[:] = [d for d in diagnostics if not any(d['message'].endswith('Possible invalid reference: ' + ref) for ref in resolved_ids)]
+        result['resolved_links'] = list({item['href']: item for item in resolved}.values())
         # The upstream backend defaults to .dita; this application deliberately emits .xml.
         for node in root.xpath("//*[@href]"):
             href = node.get("href")
@@ -113,7 +131,7 @@ def _convert_requests(requests, kind):
                              cwd=ROOT, timeout=max(60, len(requests) * 5))
     if process.returncode:
         raise RuntimeError("Converter could not start. Run ./scripts/setup.sh.\n" + process.stderr[-3000:])
-    return [finalize(item, kind) for item in json.loads(process.stdout)]
+    return [finalize(item, kind, request.get('references')) for item, request in zip(json.loads(process.stdout), requests)]
 
 
 def convert_text(text, *, filename="document.adoc", attributes=None, kind="auto", attribute_text="", attribute_file=None):

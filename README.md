@@ -34,7 +34,9 @@ If metadata is absent, filenames starting with `con-`, `proc-`, and `ref-` ident
 
 The `examples/` directory includes representative modules, the supplied reference XML, and the RBAC concept and LDAP task source modules. `reference.adoc` demonstrates the supplied XML vocabulary; it is a shorter illustrative source, not a reconstruction of the entire supplied file.
 
-Optional attributes are `name=value`, one per line. For example:
+For a module from a local clone, enter the full path to its `.adoc` attributes file in **Attributes file location**, for example `/path/to/your-clone/artifacts/attributes.adoc`. The browser remembers the path, and the converter reads the file on every conversion. It never writes into your clone. Attribute references, conditions, and nested includes are handled by Asciidoctor; includes must stay within the selected attributes file's folder.
+
+**Attribute overrides** accepts `name=value`, one per line, and takes precedence over file definitions. Shared attribute files often omit guide-specific values such as `context`; use the value defined by the module's containing guide or assembly to preserve its ID. For example:
 
 ```text
 product=Red Hat Developer Hub
@@ -42,7 +44,7 @@ product-short=Developer Hub
 context=standalone
 ```
 
-Pasted and uploaded files are self-contained. Use the CLI with `--root` for includes or a repository comparison for modules with dependencies. Missing attributes and unsupported content produce diagnostics instead of silently disappearing. Existing explicit IDs are preserved. Files without an ID receive a stable ID derived from their logical source path.
+Without an attributes file, pasted and uploaded files are self-contained. With one, includes resolve relative to its folder; for source modules with includes elsewhere in the repository, use the CLI with `--root` or a repository comparison. Missing attributes are listed once in the UI with instructions to supply them; unsupported content produces diagnostics instead of silently disappearing. Existing explicit IDs are preserved. Files without an ID receive a stable ID derived from their logical source path.
 
 ### Compare releases
 

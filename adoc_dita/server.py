@@ -81,7 +81,8 @@ def serve(port=8765):
                 if self.path == "/api/convert":
                     with conversion_lock:
                         result = convert_text(data["source"], filename=data.get("filename", "document.adoc"),
-                                              attributes=parse_attributes(data.get("attributes", "").splitlines()), kind=data.get("type", "auto"))
+                                              attributes=parse_attributes(data.get("attributes", "").splitlines()), kind=data.get("type", "auto"),
+                                              attribute_file=data.get("attribute_file", "").strip() or None)
                     return self.respond(200, result)
                 if self.path == "/api/compare":
                     options = dict(repository=data["repository"], base=data["base"], target=data["target"],

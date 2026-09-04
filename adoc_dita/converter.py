@@ -37,6 +37,10 @@ def finalize(raw, kind="auto"):
         detected = {"con": "concept", "proc": "task", "ref": "reference"}.get(prefix)
     result["topic_type"] = detected if kind == "auto" else kind
     diagnostics = result.setdefault("diagnostics", [])
+    result["missing_attributes"] = sorted({
+        match.group(1) for diagnostic in diagnostics
+        if (match := re.search(r"skipping reference to missing attribute: ([\w-]+)", diagnostic["message"]))
+    })
     if not result["topic_type"]:
         diagnostics.append({"severity": "error", "message": "Select Concept, Task, or Reference; or add :_mod-docs-content-type: CONCEPT, PROCEDURE, or REFERENCE to the source."})
     if not raw.get("xml") or any(d["severity"] == "error" for d in diagnostics):
@@ -95,22 +99,42 @@ def finalize(raw, kind="auto"):
 
 def convert_files(root, paths, *, attributes=None, attribute_files=None, kind="auto"):
     root = Path(root).resolve()
+    requests = [{"root": str(root), "path": p, "attributes": attributes or {}, "attribute_files": attribute_files or []} for p in paths]
+    return _convert_requests(requests, kind)
+
+
+def _convert_requests(requests, kind):
     if kind not in ("auto", "concept", "task", "reference"):
         raise ValueError("Unknown topic type")
-    requests = [{"root": str(root), "path": p, "attributes": attributes or {}, "attribute_files": attribute_files or []} for p in paths]
     env = dict(os.environ, BUNDLE_GEMFILE=str(ROOT / "Gemfile"), BUNDLE_PATH=str(ROOT / "vendor/bundle"))
     env.pop("RUBYOPT", None)
     process = subprocess.run(["bundle", "exec", "ruby", str(ROOT / "scripts/convert.rb")],
                              input=json.dumps(requests), text=True, capture_output=True, env=env,
-                             cwd=ROOT, timeout=max(60, len(paths) * 5))
+                             cwd=ROOT, timeout=max(60, len(requests) * 5))
     if process.returncode:
         raise RuntimeError("Converter could not start. Run ./scripts/setup.sh.\n" + process.stderr[-3000:])
     return [finalize(item, kind) for item in json.loads(process.stdout)]
 
 
-def convert_text(text, *, filename="document.adoc", attributes=None, kind="auto", attribute_text=""):
+def convert_text(text, *, filename="document.adoc", attributes=None, kind="auto", attribute_text="", attribute_file=None):
     if Path(filename).name != filename or not filename.lower().endswith(".adoc"):
         raise ValueError("Use a filename ending in .adoc without directories")
+    if attribute_file:
+        if attribute_text.strip():
+            raise ValueError("Choose an attributes file or inline attribute text, not both")
+        path = Path(attribute_file).expanduser()
+        if not path.is_absolute():
+            raise ValueError("Enter the full absolute path to your attributes .adoc file")
+        if path.suffix.lower() != ".adoc":
+            raise ValueError("Choose an attributes file ending in .adoc")
+        if not path.is_file():
+            raise ValueError(f"Attributes file not found: {path}. Check the location on this computer.")
+        path = path.resolve()
+        # Pass the pasted source in memory. Never create or overwrite files in the clone.
+        # Native attribute includes retain their directory and stay inside this root.
+        request = {"root": str(path.parent), "path": filename, "source": text,
+                   "attributes": attributes or {}, "attribute_files": [path.name]}
+        return _convert_requests([request], kind)[0]
     with tempfile.TemporaryDirectory(prefix="adoc-dita-") as folder:
         root = Path(folder)
         (root / filename).write_text(text, encoding="utf-8")

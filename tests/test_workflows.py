@@ -81,6 +81,45 @@ class ConversionTests(unittest.TestCase):
             result = convert_text('= Unsafe\n\ninclude::' + include + '[]\n', kind='concept')
             self.assertEqual(result['status'], 'error', result)
 
+    def test_paste_with_local_attributes_file(self):
+        with tempfile.TemporaryDirectory(prefix='attributes with spaces ') as folder:
+            root = Path(folder)
+            attributes = root / 'attributes.adoc'
+            attributes.write_text(':_mod-docs-content-type: SNIPPET\n:product: File product\ninclude::extra.adoc[]\n')
+            (root / 'extra.adoc').write_text('ifdef::enabled[]\n:config-file: app-config.yaml\nendif::[]\n')
+            source = ':_mod-docs-content-type: CONCEPT\n\n[id="configuration_{context}"]\n= Configuration\n\n{product} uses `{config-file}`.\n'
+            # A pasted filename may collide with a real file: no reads or writes to it.
+            (root / 'document.adoc').write_text('Leave this file unchanged.\n')
+            original = {p.name: p.read_bytes() for p in root.iterdir()}
+            missing = convert_text(source, attribute_file=str(attributes), attributes={'enabled': ''})
+            self.assertEqual(missing['status'], 'error')
+            self.assertEqual(missing['missing_attributes'], ['context'])
+            self.assertIsNone(missing['xml'])
+            overrides = {'enabled': '', 'context': 'guide', 'product': 'Override product'}
+            first = convert_text(source, attribute_file=str(attributes), attributes=overrides)
+            self.assertEqual(first['status'], 'ok', first['diagnostics'])
+            self.assertIn('id="configuration_guide"', first['xml'])
+            self.assertIn('Override product uses <codeph>app-config.yaml</codeph>', first['xml'])
+            self.assertEqual(first['dependencies'], ['attributes.adoc', 'extra.adoc'])
+            self.assertEqual(first, convert_text(source, attribute_file=str(attributes), attributes=overrides))
+            self.assertEqual(original, {p.name: p.read_bytes() for p in root.iterdir()})
+            attributes.write_text(':product: Updated on disk\n')
+            updated = convert_text('= Product\n\n{product}\n', attribute_file=str(attributes), kind='concept')
+            self.assertIn('Updated on disk', updated['xml'])
+
+    def test_local_attributes_path_and_include_errors(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for path, message in [('relative.adoc', 'absolute path'), (str(root / 'missing.adoc'), 'not found'), (str(root / 'file.txt'), 'ending in .adoc')]:
+                with self.assertRaisesRegex(ValueError, message):
+                    convert_text('= Test\n\nText.\n', attribute_file=path, kind='concept')
+            attrs = root / 'attributes.adoc'
+            for target in ['../outside.adoc', 'https://example.com/attributes.adoc']:
+                attrs.write_text('include::' + target + '[]\n')
+                result = convert_text('= Test\n\nText.\n', attribute_file=str(attrs), kind='concept')
+                self.assertEqual(result['status'], 'error', result)
+                self.assertIsNone(result['xml'])
+
     def test_native_includes_tags_lines_and_conditions(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

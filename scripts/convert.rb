@@ -34,7 +34,9 @@ def convert_one(request)
   path = request.fetch('path')
   file = File.expand_path(path, root)
   raise 'Input path must stay within the input root' unless file.start_with?(root + File::SEPARATOR)
-  raise 'Input file is a symlink outside the input root' unless File.realpath(file).start_with?(root + File::SEPARATOR)
+  unless request.key?('source')
+    raise 'Input file is a symlink outside the input root' unless File.realpath(file).start_with?(root + File::SEPARATOR)
+  end
   Thread.current[:conversion_root] = root
   Thread.current[:dependencies] = []
   logger = Asciidoctor::MemoryLogger.new
@@ -55,7 +57,8 @@ def convert_one(request)
     raise "Missing attribute file: #{p}" unless File.file?(abs)
     "include::#{abs}[]"
   end.join("\n")
-  input = (prefix.empty? ? '' : prefix + "\n\n") + File.read(file, encoding: 'UTF-8')
+  source = request.key?('source') ? request.fetch('source') : File.read(file, encoding: 'UTF-8')
+  input = (prefix.empty? ? '' : prefix + "\n\n") + source
   doc = Asciidoctor.load input, safe: :unsafe, base_dir: File.dirname(file), backend: 'dita-topic',
     attributes: attributes, logger: logger, sourcemap: true, header_footer: true,
     docfile: file

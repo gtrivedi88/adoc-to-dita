@@ -16,8 +16,9 @@
 <div class="workspace">
 <div class="panel"><div class="panelhead"><h2>AsciiDoc source</h2><div class="row"><button class="ghost" id="sample">Load example</button><button class="ghost" id="upload-button">Upload .adoc</button><input type="file" id="upload" accept=".adoc,text/plain" hidden></div></div>
 <div class="fields"><div class="field"><label for="filename">Filename</label><input id="filename" value="document.adoc"></div><div class="field"><label for="kind">Topic type</label><select id="kind"><option value="auto">Detect from content</option><option value="concept">Concept</option><option value="task">Task</option><option value="reference">Reference</option></select></div></div>
+<div class="fields"><div class="field"><label for="conversion-attribute-file">Attributes file location (optional)</label><input id="conversion-attribute-file" spellcheck="false" placeholder="/path/to/your-clone/artifacts/attributes.adoc" aria-describedby="attribute-file-help"><p id="attribute-file-help" class="help">Paste the full path from your local clone. Read on each conversion; this browser remembers the path. Includes resolve within the attributes file’s folder.</p></div></div>
 <textarea id="source" aria-label="AsciiDoc source" spellcheck="false" placeholder="= Your document title&#10;&#10;Paste your AsciiDoc content here…"></textarea>
-<details><summary>Attributes</summary><p class="help">Optional name=value definitions, one per line. File includes require the CLI or a repository comparison.</p><textarea id="attributes" aria-label="Conversion attributes" spellcheck="false" placeholder="product=Red Hat Developer Hub&#10;context=standalone"></textarea></details>
+<details id="attribute-overrides"><summary>Attribute overrides</summary><p class="help">Optional name=value definitions, one per line. These override the attributes file. Guide-specific values such as context may still be needed.</p><textarea id="attributes" aria-label="Conversion attributes" spellcheck="false" placeholder="context=your-guide-context"></textarea></details>
 <div class="foot"><span class="small" id="source-count">0 lines</span><button class="primary" id="convert">Convert to XML &nbsp; →</button></div></div>
 <div class="panel"><div class="panelhead"><h2>DITA XML <span class="filebadge">.xml</span></h2><div class="row"><button class="ghost" id="copy" disabled>Copy XML</button><button class="ghost" id="download" disabled>Download</button></div></div>
 <div class="outputwrap"><textarea id="xml" aria-label="Generated DITA XML" readonly spellcheck="false"></textarea><div class="empty" id="empty-output"><div class="empty-icon">&lt;topic&gt;</div><p>Your converted XML will appear here, ready to copy or download.</p></div></div>
@@ -68,13 +69,39 @@ function tab(name){for(const n of ['convert','compare']){$(n+'-tab').setAttribut
 $('convert-tab').onclick=()=>tab('convert');$('compare-tab').onclick=()=>tab('compare');
 document.querySelector('.tabs').onkeydown=e=>{if(['ArrowLeft','ArrowRight'].includes(e.key)){const name=$('convert-panel').hidden?'convert':'compare';tab(name);$(name+'-tab').focus();e.preventDefault();}};
 function invalidate(){revision++;conversion=null;$('copy').disabled=true;$('download').disabled=true;$('xml').value='';$('empty-output').hidden=false;$('xml-count').textContent='—';$('convert-status').textContent='Ready to convert';$('convert-status').className='status';$('convert-notice').hidden=true;$('source-count').textContent=($('source').value?$('source').value.split('\n').length:0)+' lines';}
-for(const id of ['source','filename','attributes','kind'])$(id).addEventListener('input',invalidate);
+for(const id of ['source','filename','attributes','kind','conversion-attribute-file'])$(id).addEventListener('input',invalidate);
+try{$('conversion-attribute-file').value=localStorage.getItem('adoc-dita.attribute-file')||'';}catch{}
+$('conversion-attribute-file').addEventListener('input',()=>{try{localStorage.setItem('adoc-dita.attribute-file',$('conversion-attribute-file').value);}catch{}});
 $('sample').onclick=()=>{$('source').value=example;$('filename').value='install-plugin.adoc';$('kind').value='auto';invalidate();};
 $('upload-button').onclick=()=>$('upload').click();$('upload').onchange=async()=>{const file=$('upload').files[0];if(!file)return;if(file.size>2*1024*1024){notice('convert','Choose a file smaller than 2 MB.');return;}$('source').value=await file.text();$('filename').value=file.name;invalidate();$('upload').value='';};
 function notice(flow,message){$(flow+'-notice').textContent=message;$(flow+'-notice').hidden=!message;}
 async function api(path,data){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-App-Token':'__TOKEN__'},body:JSON.stringify(data)});const result=await response.json();if(!response.ok)throw new Error(result.error||'Request failed');return result;}
 function download(text,name,type='application/xml'){const url=URL.createObjectURL(new Blob([text],{type}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
-$('convert').onclick=async()=>{invalidate();const submitted=revision;$('convert').disabled=true;$('convert-status').textContent='Converting and validating…';try{const result=await api('/api/convert',{source:$('source').value,filename:$('filename').value,attributes:$('attributes').value,type:$('kind').value});if(submitted!==revision){$('convert-status').textContent='Source changed. Convert again.';return;}conversion=result;$('xml').value=result.xml||'';$('empty-output').hidden=!!result.xml;$('copy').disabled=$('download').disabled=!result.xml;$('xml-count').textContent=result.xml?(result.xml.trimEnd().split('\n').length+' lines'):'—';$('convert-status').textContent=result.status==='ok'?'✓ Valid DITA '+result.topic_type:result.status==='review'?'Valid XML · review warnings':'Conversion needs attention';$('convert-status').className='status '+result.status;notice('convert',result.diagnostics.map(d=>d.severity.toUpperCase()+': '+d.message).join('\n'));}catch(e){notice('convert',e.message);$('convert-status').textContent='Conversion failed';}finally{$('convert').disabled=false;}};
+$('convert').onclick=async()=>{
+  invalidate();const submitted=revision;
+  $('convert').disabled=true;$('convert-status').textContent='Converting and validating…';
+  try{
+    const result=await api('/api/convert',{
+      source:$('source').value,filename:$('filename').value,
+      attributes:$('attributes').value,type:$('kind').value,
+      attribute_file:$('conversion-attribute-file').value.trim()
+    });
+    if(submitted!==revision){$('convert-status').textContent='Inputs changed. Convert again.';return;}
+    conversion=result;$('xml').value=result.xml||'';$('empty-output').hidden=!!result.xml;
+    $('copy').disabled=$('download').disabled=!result.xml;
+    $('xml-count').textContent=result.xml?(result.xml.trimEnd().split('\n').length+' lines'):'—';
+    $('convert-status').textContent=result.status==='ok'?'✓ Valid DITA '+result.topic_type:result.status==='review'?'Valid XML · review warnings':'Conversion needs attention';
+    $('convert-status').className='status '+result.status;
+    const missing=result.missing_attributes||[];
+    const messages=[...new Set(result.diagnostics.filter(d=>!missing.length||!d.message.includes('skipping reference to missing attribute:')).map(d=>d.severity.toUpperCase()+': '+d.message))];
+    if(missing.length){
+      $('attribute-overrides').open=true;
+      messages.unshift('Missing attributes: '+missing.join(', ')+'.\n'+($('conversion-attribute-file').value.trim()?'The selected file does not define these values for this conversion.':'Enter your local attributes file location above.')+' Add any remaining name=value definitions under Attribute overrides, then convert again.');
+    }
+    notice('convert',messages.join('\n\n'));
+  }catch(e){if(submitted===revision){notice('convert',e.message);$('convert-status').textContent='Conversion failed';}}
+  finally{$('convert').disabled=false;}
+};
 $('copy').onclick=async()=>{try{await navigator.clipboard.writeText(conversion.xml);$('copy').textContent='Copied ✓';setTimeout(()=>$('copy').textContent='Copy XML',1500);}catch{$('xml').select();notice('convert','Press Ctrl+C or Command+C to copy the selected XML.');}};
 $('download').onclick=()=>download(conversion.xml,conversion.output_path);
 $('load-refs').onclick=async()=>{$('load-refs').disabled=true;notice('compare','');try{const data=await api('/api/refs',{repository:$('repository').value});$('release-refs').replaceChildren(...data.refs.map(ref=>{const o=document.createElement('option');o.value=ref;return o;}));$('compare-status').textContent=data.refs.length+' branches and tags available. Choose two below.';}catch(e){notice('compare',e.message);}finally{$('load-refs').disabled=false;}};

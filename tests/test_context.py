@@ -92,6 +92,18 @@ class RepositoryContextTests(unittest.TestCase):
                         'Repository source settings']:
             self.assertNotIn(removed, html)
         self.assertIn('No project or guide selection is required', html)
+        self.assertIn('Choose .adoc', html)
+        self.assertIn('attribute_text:', html)
+
+    def test_uploaded_attributes_are_direct_input(self):
+        source = ':_mod-docs-content-type: CONCEPT\n\n[id="upload_{context}"]\n= Upload\n\n{product}.\n'
+        result = convert_standalone(source, attribute_text=':product: Uploaded attributes\n')
+        self.assertEqual(result['status'], 'ok', result)
+        self.assertIn('id="upload"', result['xml'])
+        self.assertIn('Uploaded attributes.', result['xml'])
+        with self.assertRaisesRegex(ValueError, 'upload or enter its local path'):
+            convert_standalone(source, attribute_text=':product: One\n',
+                               attribute_file=self.root / 'artifacts/attributes.adoc')
 
     def test_dynamic_include_discovers_an_additional_guide(self):
         self.write('guides/custom-name.adoc', 'include::artifacts/attributes.adoc[]\n:topic-directory: ../modules\n:context: dynamic\n\n= Dynamic guide\n\ninclude::{topic-directory}/main.adoc[leveloffset=+1]\ninclude::{topic-directory}/target.adoc[leveloffset=+1]\n')

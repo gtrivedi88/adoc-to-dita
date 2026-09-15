@@ -137,7 +137,8 @@ def infer_repository(attribute_file):
     return None
 
 
-def convert_standalone(source, *, filename='document.adoc', attributes=None, kind='auto', attribute_file=None):
+def convert_standalone(source, *, filename='document.adoc', attributes=None, kind='auto',
+                       attribute_file=None, attribute_text=''):
     """Convert pasted content without asking the user to select a guide.
 
     When the attributes file belongs to a Git clone, a unique source match is
@@ -145,6 +146,11 @@ def convert_standalone(source, *, filename='document.adoc', attributes=None, kin
     is selected. If no unique match exists, normal attributes-file conversion is
     used and no ambiguity is exposed to the user.
     """
+    if attribute_file and attribute_text.strip():
+        raise ValueError('Choose an attributes file upload or enter its local path, not both')
+    if attribute_text.strip():
+        return convert_text(source, filename=filename, attributes=attributes, kind=kind,
+                            attribute_text=attribute_text)
     repository = infer_repository(attribute_file)
     if repository:
         index = RepositoryContext(repository)
@@ -187,7 +193,7 @@ def convert_standalone(source, *, filename='document.adoc', attributes=None, kin
                 result['standalone_context'] = 'base-id'
             return result
     return convert_text(source, filename=filename, attributes=attributes, kind=kind,
-                        attribute_file=attribute_file)
+                        attribute_file=attribute_file, attribute_text=attribute_text)
 
 
 def convert_in_repository(source, *, repository, filename='document.adoc', source_path=None,

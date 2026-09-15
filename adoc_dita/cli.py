@@ -22,7 +22,7 @@ def parse_attributes(values):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Convert AsciiDoc to validated DITA XML, or compare two Git snapshots.")
-    parser.add_argument("--version", action="version", version="adoc-dita 0.1.0")
+    parser.add_argument("--version", action="version", version="adoc-dita 0.2.0")
     sub = parser.add_subparsers(dest="command", required=True)
     one = sub.add_parser("convert", help="Convert a file, or - for stdin")
     one.add_argument("file", nargs="?", default="-")
@@ -41,7 +41,7 @@ def main(argv=None):
     for command in [one, diff]:
         command.add_argument("--guide", help="Guide entry file relative to the repository; follows its native include and attribute rules")
         command.add_argument("-a", "--attribute", action="append", default=[], help="Attribute name=value; repeatable")
-        command.add_argument("--attribute-file", action="append", help="Definition file relative to input root; repeatable")
+        command.add_argument("--attribute-file", action="append", help="Attributes .adoc file; absolute or relative to --root/input folder. Repeatable for compare")
         command.add_argument("--type", choices=["auto", "concept", "task", "reference"], default="auto")
     listing = sub.add_parser("refs", help="List available branches and tags")
     listing.add_argument("repository")
@@ -58,10 +58,10 @@ def main(argv=None):
             return 0
         attributes = parse_attributes(args.attribute)
         if args.command == "convert":
+            if args.attribute_file and len(args.attribute_file) > 1:
+                raise ValueError('Content conversion accepts one attributes file; include additional definitions from that file')
             if args.repository:
                 from .context import convert_in_repository
-                if args.attribute_file and len(args.attribute_file) > 1:
-                    raise ValueError('Repository conversion accepts one shared attributes file')
                 root = Path(args.repository).expanduser().resolve()
                 file = Path(args.file).resolve() if args.file != '-' else None
                 shared = str(root / args.attribute_file[0]) if args.attribute_file else None
@@ -72,15 +72,25 @@ def main(argv=None):
                                                attribute_file=shared, kind=args.type)
             elif args.guide or args.profile:
                 raise ValueError('Use --repository with --guide or --profile for content conversion')
-            elif args.file == "-":
-                if args.attribute_file:
-                    raise ValueError("Use inline -a attributes for stdin, or convert a file with --root")
-                result = convert_text(sys.stdin.read(), filename=args.filename, attributes=attributes, kind=args.type)
             else:
-                file = Path(args.file).resolve()
-                root = Path(args.root).resolve() if args.root else file.parent
-                result = convert_files(root, [file.relative_to(root).as_posix()], attributes=attributes,
-                                       attribute_files=args.attribute_file, kind=args.type)[0]
+                file = Path(args.file).resolve() if args.file != '-' else None
+                source = file.read_text(encoding='utf-8') if file else sys.stdin.read()
+                filename = file.name if file else args.filename
+                if args.attribute_file:
+                    from .context import convert_standalone
+                    base = Path(args.root).expanduser().resolve() if args.root else (file.parent if file else Path.cwd())
+                    shared = Path(args.attribute_file[0]).expanduser()
+                    shared = shared if shared.is_absolute() else base / shared
+                    result = convert_standalone(source, filename=filename, attributes=attributes,
+                                                attribute_file=shared, kind=args.type)
+                elif file:
+                    root = Path(args.root).expanduser().resolve() if args.root else file.parent
+                    result = convert_files(root, [file.relative_to(root).as_posix()], attributes=attributes,
+                                           attribute_files=args.attribute_file, kind=args.type)[0]
+                elif args.attribute_file:
+                    raise ValueError('Stdin conversion accepts one attributes file')
+                else:
+                    result = convert_text(source, filename=filename, attributes=attributes, kind=args.type)
             for diagnostic in result["diagnostics"]:
                 print(f'{diagnostic["severity"]}: {diagnostic["message"]}', file=sys.stderr)
             if result['status'] == 'selection':

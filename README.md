@@ -34,7 +34,7 @@ If metadata is absent, filenames starting with `con-`, `proc-`, and `ref-` ident
 
 The `examples/` directory includes representative modules, the supplied reference XML, and the RBAC concept and LDAP task source modules. `reference.adoc` demonstrates the supplied XML vocabulary; it is a shorter illustrative source, not a reconstruction of the entire supplied file.
 
-The browser conversion form requires only the AsciiDoc content. An attributes file is optional. It loads shared definitions directly; it never activates a project or guide selector. If that file belongs to a local Git clone and the pasted topic has one unambiguous source match, the source path is used quietly as the base for local snippets and includes. The pasted content remains in memory and the clone is never modified.
+The browser conversion form requires only the AsciiDoc content. An attributes file is optional: choose the `.adoc` file directly or enter its full local path. It loads shared definitions directly; it never activates a project or guide selector. If a supplied path belongs to a local Git clone and the pasted topic has one unambiguous source match, the source path is used quietly as the base for local snippets, includes, and topic links. The pasted and uploaded content remains in memory and the clone is never modified.
 
 Many modular documentation sources use an ID such as `[id="configuration_{context}"]`, where an assembly normally supplies `context`. Standalone conversion deterministically emits the base ID `configuration`. The same rule applies to structural xref targets. Set `context=admin-guide` under **Attribute overrides** when the desired output is `configuration_admin-guide`. Uses of `{context}` in prose are still reported as missing; content attributes are never guessed.
 
@@ -88,6 +88,12 @@ Additions, deletions, and Git-detected renames are reported. Deleted topics only
 # Paste through stdin and explicitly select a topic type.
 printf '= Introduction\n\nHello *world*.\n' | ./adoc-dita convert --type concept
 
+# Paste through stdin and load the same attributes file used by the browser.
+cat modules/con-application-configuration-file.adoc | ./adoc-dita convert - \
+  --filename con-application-configuration-file.adoc \
+  --attribute-file /path/to/docs/artifacts/attributes.adoc \
+  -o results/application-configuration-file.xml
+
 # Resolve local includes and attribute files inside a chosen root.
 ./adoc-dita convert examples/proc-share-a-secret-with-ldap.adoc \
   --root examples --attribute-file attributes.adoc -o results/ldap.xml
@@ -140,6 +146,6 @@ Whitespace in code blocks and mixed XML content is preserved. Formatting may dif
 PYTHONPATH=. .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Tests exercise all three topic types, the supplied plugin-topic vocabulary, standalone context IDs, automatic local snippet resolution, the LDAP task and RBAC concept, escaping, code whitespace, missing attributes, include confinement, tagged/conditional includes, type selection, additions/deletions/renames, dependency changes, invalid output handling, and repeatable XML/ZIP results. An inactive GitHub Actions template is provided at `ci/github-actions.yml`. To enable automatic tests on pushes and pull requests, use a GitHub login with workflow permission and copy it to `.github/workflows/test.yml`.
+Tests exercise the CLI as subprocesses for file, stdin, and branch-comparison workflows, plus all three topic types, the supplied plugin-topic vocabulary, standalone context IDs, automatic local snippet resolution, the LDAP task and RBAC concept, escaping, code whitespace, missing attributes, include confinement, tagged/conditional includes, type selection, additions/deletions/renames, dependency changes, invalid output handling, and repeatable XML/ZIP results. An inactive GitHub Actions template is provided at `ci/github-actions.yml`. To enable automatic tests on pushes and pull requests, use a GitHub login with workflow permission and copy it to `.github/workflows/test.yml`.
 
 Implementation: a Python CLI/local HTTP interface, a JSON bridge to the pinned `asciidoctor-dita-topic` Ruby converter, `dita-convert` XSLT specialization, and lxml schema validation. See [THIRD_PARTY.md](THIRD_PARTY.md) for upstream tools, schemas, and source attribution.

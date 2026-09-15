@@ -83,7 +83,8 @@ def serve(port=8765):
                         options = dict(filename=data.get("filename", "document.adoc"),
                                        attributes=parse_attributes(data.get("attributes", "").splitlines()), kind=data.get("type", "auto"))
                         attribute_file = data.get("attribute_file", "").strip() or None
-                        result = convert_standalone(data['source'], **options, attribute_file=attribute_file)
+                        result = convert_standalone(data['source'], **options, attribute_file=attribute_file,
+                                                    attribute_text=data.get('attribute_text', ''))
                     return self.respond(200, result)
                 if self.path == "/api/compare":
                     options = dict(repository=data["repository"], base=data["base"], target=data["target"],

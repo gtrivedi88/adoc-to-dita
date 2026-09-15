@@ -12,7 +12,7 @@ Supports **concept**, **task (procedure)**, and **reference** topics. No Vale, A
 Prerequisites: Git, Python 3.10+, Ruby 3.2+, and Bundler. macOS and Linux are supported; use WSL on Windows.
 
 ```sh
-git clone https://github.com/gtrivedi88/adoc-dita.git
+git clone https://github.com/gtrivedi88/adoc-to-dita.git
 cd adoc-dita
 ./scripts/setup.sh
 ./adoc-dita serve

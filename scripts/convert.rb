@@ -19,6 +19,20 @@ module ConfinedIncludes
     if !File.exist?(candidate) && !Pathname.new(target).absolute? && File.file?(fallback)
       target = candidate = fallback
     end
+    # Some modular sources use {docdir}/path while their build sets docdir to
+    # the repository root. If Asciidoctor expands docdir to the topic folder,
+    # retry progressively shorter repository-relative suffixes. This is generic
+    # and deterministic: it never searches outside root or guesses by basename.
+    if !File.exist?(candidate) && candidate.start_with?(root + File::SEPARATOR)
+      parts = Pathname.new(candidate).relative_path_from(Pathname.new(root)).each_filename.to_a
+      (1...parts.length).each do |drop|
+        alternate = File.join(root, *parts.drop(drop))
+        if File.file?(alternate)
+          target = candidate = alternate
+          break
+        end
+      end
+    end
     candidate = File.realpath(candidate) if File.exist?(candidate)
     unless candidate.start_with?(root + File::SEPARATOR)
       raise "Include is outside the input root: #{target}"

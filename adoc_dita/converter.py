@@ -20,6 +20,42 @@ KINDS = {"CONCEPT": "concept", "PROCEDURE": "task", "REFERENCE": "reference"}
 PARSER = lambda: etree.XMLParser(resolve_entities=False, load_dtd=False, no_network=True)
 
 
+def standalone_source(source, attributes=None):
+    """Remove a missing modular-docs context only from IDs and xref targets.
+
+    A module commonly declares ``topic_{context}`` because an assembly supplies
+    ``context``.  A pasted topic has no assembly.  Its deterministic standalone
+    identity is therefore ``topic``, which also matches DITA exported from AEM.
+    Context references in prose remain untouched and are still reported as
+    missing attributes.
+    """
+    if "context" in (attributes or {}) or re.search(r"^:context:\s*", source, re.M):
+        return source, False
+
+    def without_context(value):
+        return value.replace("_{context}", "").replace("-{context}", "")
+
+    changed = False
+    lines = []
+    for line in source.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if stripped.startswith(("[id=", "[#", "[[")):
+            updated = without_context(line)
+            changed = changed or updated != line
+            line = updated
+
+        def clean_target(match):
+            nonlocal changed
+            updated = without_context(match.group(2))
+            changed = changed or updated != match.group(2)
+            return match.group(1) + updated
+
+        line = re.sub(r"(\bxref:)([^\[\s]+)", clean_target, line)
+        line = re.sub(r"(<<)([^,>\s]+)", clean_target, line)
+        lines.append(line)
+    return "".join(lines), changed
+
+
 @functools.lru_cache(maxsize=4)
 def schema(kind):
     return etree.XMLSchema(etree.parse(str(ROOT / "schemas/dita-1.3/technicalContent/xsd" / f"{kind}.xsd"), PARSER()))
@@ -59,17 +95,19 @@ def finalize(raw, kind="auto", references=None):
         # A guide's native ID registry proves which module owns a cross-topic anchor.
         targets = {}
         for ref in references or []:
-            targets.setdefault(ref['id'], []).append(ref['path'])
+            targets.setdefault(ref['id'], []).append(ref)
         resolved = []
         for node in root.xpath('//*[@href]'):
             href = node.get('href')
             if href.startswith('#') and len(targets.get(href[1:], [])) == 1:
-                target = targets[href[1:]][0]
+                reference = targets[href[1:]][0]
+                target = reference['path']
                 if target != raw['path']:
                     relative = posixpath.relpath(xml_name(target), posixpath.dirname(xml_name(raw['path'])) or '.')
-                    node.set('href', quote(relative, safe='/') + href)
+                    fragment = reference.get('target_id', href[1:])
+                    node.set('href', quote(relative, safe='/') + '#' + fragment)
                     node.set('format', 'dita')
-                    resolved.append(dict(original=href, href=node.get('href'), source_path=target, topic_id=href[1:]))
+                    resolved.append(dict(original=href, href=node.get('href'), source_path=target, topic_id=fragment))
         resolved_ids = {item['original'] for item in resolved}
         diagnostics[:] = [d for d in diagnostics if not any(d['message'].endswith('Possible invalid reference: ' + ref) for ref in resolved_ids)]
         result['resolved_links'] = list({item['href']: item for item in resolved}.values())
@@ -137,6 +175,7 @@ def _convert_requests(requests, kind):
 def convert_text(text, *, filename="document.adoc", attributes=None, kind="auto", attribute_text="", attribute_file=None):
     if Path(filename).name != filename or not filename.lower().endswith(".adoc"):
         raise ValueError("Use a filename ending in .adoc without directories")
+    text, standalone_context = standalone_source(text, attributes)
     if attribute_file:
         if attribute_text.strip():
             raise ValueError("Choose an attributes file or inline attribute text, not both")
@@ -152,7 +191,10 @@ def convert_text(text, *, filename="document.adoc", attributes=None, kind="auto"
         # Native attribute includes retain their directory and stay inside this root.
         request = {"root": str(path.parent), "path": filename, "source": text,
                    "attributes": attributes or {}, "attribute_files": [path.name]}
-        return _convert_requests([request], kind)[0]
+        result = _convert_requests([request], kind)[0]
+        if standalone_context:
+            result["standalone_context"] = "base-id"
+        return result
     with tempfile.TemporaryDirectory(prefix="adoc-dita-") as folder:
         root = Path(folder)
         (root / filename).write_text(text, encoding="utf-8")
@@ -160,4 +202,7 @@ def convert_text(text, *, filename="document.adoc", attributes=None, kind="auto"
         if attribute_text.strip():
             (root / "_attributes.adoc").write_text(attribute_text, encoding="utf-8")
             files.append("_attributes.adoc")
-        return convert_files(root, [filename], attributes=attributes, attribute_files=files, kind=kind)[0]
+        result = convert_files(root, [filename], attributes=attributes, attribute_files=files, kind=kind)[0]
+        if standalone_context:
+            result["standalone_context"] = "base-id"
+        return result

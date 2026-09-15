@@ -2,7 +2,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from adoc_dita.context import convert_in_repository, infer_repository
+from adoc_dita.context import convert_in_repository, convert_standalone, infer_repository
 from adoc_dita.repository import compare, git, snapshot
 
 
@@ -68,6 +68,30 @@ class RepositoryContextTests(unittest.TestCase):
         # A shared file is loaded before the guide, so the assembly can override it.
         shared = self.convert(attribute_file=self.root / 'artifacts/attributes.adoc')
         self.assertIn('Assembly product', shared['xml'])
+
+    def test_standalone_uses_unique_source_only_for_local_includes(self):
+        source = ':_mod-docs-content-type: REFERENCE\n\n[id="preview_{context}"]\n= Preview\n\n[role="_abstract"]\n{product}.\n\ninclude::{docdir}/artifacts/preview.adoc[]\n'
+        self.write('modules/preview.adoc', source)
+        self.write('artifacts/preview.adoc', 'IMPORTANT: Included preview text.\n')
+        result = convert_standalone(source, filename='document.adoc',
+                                    attribute_file=self.root / 'artifacts/attributes.adoc')
+        self.assertEqual(result['status'], 'ok', result)
+        self.assertEqual(result['source_path'], 'modules/preview.adoc')
+        self.assertEqual(result['source_match'], 'automatic')
+        self.assertIn('id="preview"', result['xml'])
+        self.assertIn('Included preview text.', result['xml'])
+        self.assertIn('artifacts/preview.adoc', result['dependencies'])
+        linked = convert_standalone(self.source, attribute_file=self.root / 'artifacts/attributes.adoc')
+        self.assertEqual(linked['status'], 'ok', linked)
+        self.assertIn('href="target.xml#target"', linked['xml'])
+        self.assertEqual(linked['resolved_links'][0]['topic_id'], 'target')
+
+    def test_basic_browser_has_no_project_or_guide_selector(self):
+        html = (Path(__file__).parents[1] / 'adoc_dita/index.html').read_text()
+        for removed in ['local-repository', 'repository-choices', 'source-choice', 'guide-choice',
+                        'Repository source settings']:
+            self.assertNotIn(removed, html)
+        self.assertIn('No project or guide selection is required', html)
 
     def test_dynamic_include_discovers_an_additional_guide(self):
         self.write('guides/custom-name.adoc', 'include::artifacts/attributes.adoc[]\n:topic-directory: ../modules\n:context: dynamic\n\n= Dynamic guide\n\ninclude::{topic-directory}/main.adoc[leveloffset=+1]\ninclude::{topic-directory}/target.adoc[leveloffset=+1]\n')

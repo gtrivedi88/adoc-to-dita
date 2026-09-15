@@ -16,21 +16,15 @@
 <div class="workspace">
 <div class="panel"><div class="panelhead"><h2>AsciiDoc source</h2><div class="row"><button class="ghost" id="sample">Load example</button><button class="ghost" id="upload-button">Upload .adoc</button><input type="file" id="upload" accept=".adoc,text/plain" hidden></div></div>
 <div class="fields"><div class="field"><label for="filename">Filename</label><input id="filename" value="document.adoc"></div><div class="field"><label for="kind">Topic type</label><select id="kind"><option value="auto">Detect from content</option><option value="concept">Concept</option><option value="task">Task</option><option value="reference">Reference</option></select></div></div>
-<div class="fields"><div class="field"><label for="local-repository">Local repository (optional)</label><input id="local-repository" spellcheck="false" placeholder="/path/to/your-clone"><p class="help">Finds the source module and reads attributes and links from its guides. Leave blank to detect the repository from your attributes file.</p></div></div>
-<div class="fields"><div class="field"><label for="conversion-attribute-file">Attributes file location (optional)</label><input id="conversion-attribute-file" spellcheck="false" placeholder="/path/to/your-clone/artifacts/attributes.adoc" aria-describedby="attribute-file-help"><p id="attribute-file-help" class="help">With a repository, guide attributes are loaded automatically. You can also supply a shared attributes file. Paths are remembered in this browser.</p></div></div>
-<div id="repository-choices" hidden class="fields" style="display:block">
-<div id="source-choice-field" hidden><label for="source-choice">Source file</label><select id="source-choice"></select></div>
-<div id="guide-choice-field" hidden><label for="guide-choice">Guide containing this topic</label><select id="guide-choice"></select></div>
-<p class="help" id="selection-help" role="status"></p>
-</div>
+<div class="fields"><div class="field"><label for="conversion-attribute-file">Attributes file location (optional)</label><input id="conversion-attribute-file" spellcheck="false" placeholder="/path/to/attributes.adoc" aria-describedby="attribute-file-help"><p id="attribute-file-help" class="help">Loads shared attribute definitions. If the file is in a local clone, matching snippets and includes are resolved automatically. No project or guide selection is required.</p></div></div>
 <textarea id="source" aria-label="AsciiDoc source" spellcheck="false" placeholder="= Your document title&#10;&#10;Paste your AsciiDoc content here…"></textarea>
-<details><summary>Repository source settings (optional)</summary><label for="source-path">Source path relative to the repository</label><input id="source-path" placeholder="Auto-detected from the module ID or filename"><label for="guide-path" style="margin-top:12px">Guide path relative to the repository</label><input id="guide-path" placeholder="Auto-detected from include relationships"></details>
-<details id="attribute-overrides"><summary>Attribute overrides</summary><p class="help">Optional name=value definitions, one per line. These override the attributes file. Guide-specific values such as context may still be needed.</p><textarea id="attributes" aria-label="Conversion attributes" spellcheck="false" placeholder="context=your-guide-context"></textarea></details>
+<details id="attribute-overrides"><summary>Attribute overrides</summary><p class="help">Optional name=value definitions, one per line. These override the attributes file. A missing structural <code>_{context}</code> suffix is removed for standalone topic output; set <code>context=value</code> here when you need the suffix.</p><textarea id="attributes" aria-label="Conversion attributes" spellcheck="false" placeholder="product=Example product"></textarea></details>
 <div class="foot"><span class="small" id="source-count">0 lines</span><button class="primary" id="convert">Convert to XML &nbsp; →</button></div></div>
 <div class="panel"><div class="panelhead"><h2>DITA XML <span class="filebadge">.xml</span></h2><div class="row"><button class="ghost" id="copy" disabled>Copy XML</button><button class="ghost" id="download" disabled>Download</button></div></div>
 <div class="outputwrap"><textarea id="xml" aria-label="Generated DITA XML" readonly spellcheck="false"></textarea><div class="empty" id="empty-output"><div class="empty-icon">&lt;topic&gt;</div><p>Your converted XML will appear here, ready to copy or download.</p></div></div>
 <div class="foot"><span id="convert-status" class="status" role="status" aria-live="polite">Waiting for content</span><span class="small" id="xml-count">—</span></div></div>
-</div><div id="resolution-info" class="card" hidden><p id="resolution-summary"></p><details><summary>Resolved attributes and links</summary><pre id="resolution-details" style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px"></pre></details></div><div id="convert-notice" class="notice" style="overflow-wrap:anywhere" role="alert" hidden></div>
+</div><div id="convert-notice" class="notice" style="overflow-wrap:anywhere" role="alert" hidden></div>
+<details class="card"><summary>Supported topic content</summary><p>Concept, task (procedure), and reference topics are supported, including short descriptions, paragraphs, sections, ordered and unordered lists, definition lists, tables, code blocks, inline code, notes, images, emphasis, links, attributes, conditions, and confined local includes.</p><p class="help">DITA maps and bookmaps organize topic files and are outside single-topic conversion. Unsupported or lossy source constructs return diagnostics instead of being silently dropped.</p></details>
 </section>
 <section id="compare-panel" role="tabpanel" aria-labelledby="compare-tab" hidden>
 <div class="panel"><div class="panelhead"><h2>Choose two releases</h2><span class="small">Branches, tags, or commit IDs</span></div>
@@ -76,16 +70,12 @@ let conversion=null, revision=0;
 function tab(name){for(const n of ['convert','compare']){$(n+'-tab').setAttribute('aria-selected',n===name);$(n+'-panel').hidden=n!==name;}}
 $('convert-tab').onclick=()=>tab('convert');$('compare-tab').onclick=()=>tab('compare');
 document.querySelector('.tabs').onkeydown=e=>{if(['ArrowLeft','ArrowRight'].includes(e.key)){const name=$('convert-panel').hidden?'convert':'compare';tab(name);$(name+'-tab').focus();e.preventDefault();}};
-function invalidate(){revision++;conversion=null;$('resolution-info').hidden=true;$('copy').disabled=true;$('download').disabled=true;$('xml').value='';$('empty-output').hidden=false;$('xml-count').textContent='—';$('convert-status').textContent='Ready to convert';$('convert-status').className='status';$('convert-notice').hidden=true;$('source-count').textContent=($('source').value?$('source').value.split('\n').length:0)+' lines';}
-function clearRepositoryChoices(){$('source-choice').replaceChildren();$('guide-choice').replaceChildren();$('repository-choices').hidden=true;}
-for(const id of ['source','filename','attributes','kind','conversion-attribute-file','local-repository','source-path','guide-path','source-choice','guide-choice'])$(id).addEventListener('input',()=>{invalidate();$('resolution-info').hidden=true;});
-for(const id of ['source','filename','conversion-attribute-file','local-repository','source-path','guide-path'])$(id).addEventListener('input',clearRepositoryChoices);
+function invalidate(){revision++;conversion=null;$('copy').disabled=true;$('download').disabled=true;$('xml').value='';$('empty-output').hidden=false;$('xml-count').textContent='—';$('convert-status').textContent='Ready to convert';$('convert-status').className='status';$('convert-notice').hidden=true;$('source-count').textContent=($('source').value?$('source').value.split('\n').length:0)+' lines';}
+for(const id of ['source','filename','attributes','kind','conversion-attribute-file'])$(id).addEventListener('input',invalidate);
 try{$('conversion-attribute-file').value=localStorage.getItem('adoc-dita.attribute-file')||'';}catch{}
 $('conversion-attribute-file').addEventListener('input',()=>{try{localStorage.setItem('adoc-dita.attribute-file',$('conversion-attribute-file').value);}catch{}});
-try{$('local-repository').value=localStorage.getItem('adoc-dita.repository')||'';}catch{}
-$('local-repository').addEventListener('input',()=>{try{localStorage.setItem('adoc-dita.repository',$('local-repository').value);}catch{}});
-$('sample').onclick=()=>{$('source').value=example;$('filename').value='install-plugin.adoc';$('kind').value='auto';clearRepositoryChoices();invalidate();};
-$('upload-button').onclick=()=>$('upload').click();$('upload').onchange=async()=>{const file=$('upload').files[0];if(!file)return;if(file.size>2*1024*1024){notice('convert','Choose a file smaller than 2 MB.');return;}$('source').value=await file.text();$('filename').value=file.name;clearRepositoryChoices();invalidate();$('upload').value='';};
+$('sample').onclick=()=>{$('source').value=example;$('filename').value='install-plugin.adoc';$('kind').value='auto';invalidate();};
+$('upload-button').onclick=()=>$('upload').click();$('upload').onchange=async()=>{const file=$('upload').files[0];if(!file)return;if(file.size>2*1024*1024){notice('convert','Choose a file smaller than 2 MB.');return;}$('source').value=await file.text();$('filename').value=file.name;invalidate();$('upload').value='';};
 function notice(flow,message){$(flow+'-notice').textContent=message;$(flow+'-notice').hidden=!message;}
 async function api(path,data){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-App-Token':'__TOKEN__'},body:JSON.stringify(data)});const result=await response.json();if(!response.ok)throw new Error(result.error||'Request failed');return result;}
 function download(text,name,type='application/xml'){const url=URL.createObjectURL(new Blob([text],{type}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
@@ -96,34 +86,10 @@ $('convert').onclick=async()=>{
     const result=await api('/api/convert',{
       source:$('source').value,filename:$('filename').value,
       attributes:$('attributes').value,type:$('kind').value,
-      attribute_file:$('conversion-attribute-file').value.trim(),
-      local_repository:$('local-repository').value.trim(),
-      source_path:$('source-path').value.trim()||$('source-choice').value,
-      guide:$('guide-path').value.trim(),profile:$('guide-choice').value
+      attribute_file:$('conversion-attribute-file').value.trim()
     });
     if(submitted!==revision){$('convert-status').textContent='Inputs changed. Convert again.';return;}
-    if(result.status==='selection'){
-      $('repository-choices').hidden=false;
-      $('selection-help').textContent=result.selection_message;
-      $('source-choice-field').hidden=(result.source_choices||[]).length<2;
-      $('guide-choice-field').hidden=!(result.guide_choices||[]).length;
-      for(const [id,options] of [['source-choice',(result.source_choices||[]).map(path=>[path,path])],['guide-choice',(result.guide_choices||[]).map(c=>[c.key,c.title+' — '+c.context])]]){
-        const previous=$(id).value;
-        $(id).replaceChildren(new Option('Choose…',''),...options.map(([value,label])=>new Option(label,value)));
-        if(options.some(([value])=>value===previous))$(id).value=previous;
-      }
-      $('convert-status').textContent='Choose the source or guide above, then convert.';
-      notice('convert',result.diagnostics.map(d=>d.message).join('\n'));
-      $('repository-choices').scrollIntoView({behavior:'smooth',block:'center'});
-      return;
-    }
     conversion=result;$('xml').value=result.xml||'';$('empty-output').hidden=!!result.xml;
-    if(result.resolution){
-      const r=result.resolution;
-      $('resolution-info').hidden=false;
-      $('resolution-summary').textContent='Resolved from '+r.title+' · '+(result.resolved_links||[]).length+' cross-topic links resolved.';
-      $('resolution-details').textContent='Source: '+result.source_path+'\nGuide: '+r.guide+'\nIncluded by: '+r.parent+':'+r.line+'\ncontext='+r.context+'\nTopic ID: '+r.topic_id+(result.resolved_links||[]).map(link=>'\nLink: '+link.original+' → '+link.href).join('')+'\n\nDITA links use the repository folder layout. Convert linked topics with the same guide and retain those output paths.';
-    }
     $('copy').disabled=$('download').disabled=!result.xml;
     $('xml-count').textContent=result.xml?(result.xml.trimEnd().split('\n').length+' lines'):'—';
     $('convert-status').textContent=result.status==='ok'?'✓ Valid DITA '+result.topic_type:result.status==='review'?'Valid XML · review warnings':'Conversion needs attention';

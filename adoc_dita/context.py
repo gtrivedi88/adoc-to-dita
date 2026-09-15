@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 
-from .converter import ROOT, _convert_requests, xml_name
+from .converter import ROOT, _convert_requests, convert_text, standalone_source, xml_name
 
 EXCLUDED = {'.git', '.cache', '.venv', 'vendor', 'node_modules'}
 # These configure the parser/output, rather than the topic's inherited content.
@@ -135,6 +135,59 @@ def infer_repository(attribute_file):
         if (folder / '.git').exists():
             return folder
     return None
+
+
+def convert_standalone(source, *, filename='document.adoc', attributes=None, kind='auto', attribute_file=None):
+    """Convert pasted content without asking the user to select a guide.
+
+    When the attributes file belongs to a Git clone, a unique source match is
+    used only as the local include base. No guide, project, or inherited context
+    is selected. If no unique match exists, normal attributes-file conversion is
+    used and no ambiguity is exposed to the user.
+    """
+    repository = infer_repository(attribute_file)
+    if repository:
+        index = RepositoryContext(repository)
+        paths = index.match(source, filename)
+        if len(paths) == 1:
+            attribute_path = confined(index.root, Path(attribute_file).expanduser())
+            prepared, normalized = standalone_source(source, attributes)
+            path = paths[0]
+            # Resolve explicit cross-topic IDs against unique standalone topic
+            # IDs. A source target can contain a historical guide suffix, such
+            # as ``install_admin-guide``; the standalone target is ``install``.
+            bases = {}
+            for candidate, candidate_source in index.sources.items():
+                anchor, _ = identity(candidate_source)
+                if candidate not in index.topics or not anchor:
+                    continue
+                base = anchor.replace('_{context}', '').replace('-{context}', '')
+                bases.setdefault(base, []).append(candidate)
+            targets = set(re.findall(r'\bxref:([^\[\s]+)', prepared))
+            targets.update(re.findall(r'<<([^,>\s]+)', prepared))
+            references = []
+            for target in sorted(targets):
+                target = target.lstrip('#')
+                candidates = [(base, files) for base, files in bases.items()
+                              if target == base or target.startswith(base + '_') or target.startswith(base + '-')]
+                if not candidates:
+                    continue
+                longest = max(len(base) for base, _ in candidates)
+                best = [(base, files) for base, files in candidates if len(base) == longest]
+                if len(best) == 1 and len(best[0][1]) == 1:
+                    references.append(dict(id=target, path=best[0][1][0], target_id=best[0][0]))
+            request = dict(root=str(index.root), path=path, source=prepared,
+                           attributes=attributes or {},
+                           attribute_files=[attribute_path.relative_to(index.root).as_posix()],
+                           references=references)
+            result = _convert_requests([request], kind)[0]
+            result['source_path'] = path
+            result['source_match'] = 'automatic'
+            if normalized:
+                result['standalone_context'] = 'base-id'
+            return result
+    return convert_text(source, filename=filename, attributes=attributes, kind=kind,
+                        attribute_file=attribute_file)
 
 
 def convert_in_repository(source, *, repository, filename='document.adoc', source_path=None,

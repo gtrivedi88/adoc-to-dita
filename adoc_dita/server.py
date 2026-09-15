@@ -7,8 +7,7 @@ import threading
 from urllib.parse import urlsplit, parse_qs
 
 from .cli import parse_attributes
-from .converter import convert_text
-from .context import convert_in_repository, infer_repository, SourceNotFoundError
+from .context import convert_standalone
 from .repository import compare, refs
 from .report import zip_report
 
@@ -84,19 +83,7 @@ def serve(port=8765):
                         options = dict(filename=data.get("filename", "document.adoc"),
                                        attributes=parse_attributes(data.get("attributes", "").splitlines()), kind=data.get("type", "auto"))
                         attribute_file = data.get("attribute_file", "").strip() or None
-                        repository = data.get('local_repository', '').strip() or infer_repository(attribute_file)
-                        if repository:
-                            try:
-                                result = convert_in_repository(data['source'], repository=repository, **options,
-                                                               source_path=data.get('source_path') or None,
-                                                               guide=data.get('guide') or None, profile=data.get('profile') or None,
-                                                               attribute_file=attribute_file)
-                            except SourceNotFoundError:
-                                if data.get('local_repository', '').strip() or data.get('source_path') or data.get('guide'):
-                                    raise
-                                result = convert_text(data['source'], **options, attribute_file=attribute_file)
-                        else:
-                            result = convert_text(data['source'], **options, attribute_file=attribute_file)
+                        result = convert_standalone(data['source'], **options, attribute_file=attribute_file)
                     return self.respond(200, result)
                 if self.path == "/api/compare":
                     options = dict(repository=data["repository"], base=data["base"], target=data["target"],

@@ -91,10 +91,11 @@ class ConversionTests(unittest.TestCase):
             # A pasted filename may collide with a real file: no reads or writes to it.
             (root / 'document.adoc').write_text('Leave this file unchanged.\n')
             original = {p.name: p.read_bytes() for p in root.iterdir()}
-            missing = convert_text(source, attribute_file=str(attributes), attributes={'enabled': ''})
-            self.assertEqual(missing['status'], 'error')
-            self.assertEqual(missing['missing_attributes'], ['context'])
-            self.assertIsNone(missing['xml'])
+            standalone = convert_text(source, attribute_file=str(attributes), attributes={'enabled': ''})
+            self.assertEqual(standalone['status'], 'ok', standalone)
+            self.assertEqual(standalone['missing_attributes'], [])
+            self.assertIn('id="configuration"', standalone['xml'])
+            self.assertEqual(standalone['standalone_context'], 'base-id')
             overrides = {'enabled': '', 'context': 'guide', 'product': 'Override product'}
             first = convert_text(source, attribute_file=str(attributes), attributes=overrides)
             self.assertEqual(first['status'], 'ok', first['diagnostics'])
@@ -106,6 +107,60 @@ class ConversionTests(unittest.TestCase):
             attributes.write_text(':product: Updated on disk\n')
             updated = convert_text('= Product\n\n{product}\n', attribute_file=str(attributes), kind='concept')
             self.assertIn('Updated on disk', updated['xml'])
+
+    def test_standalone_context_is_only_removed_from_ids_and_xrefs(self):
+        source = ':_mod-docs-content-type: CONCEPT\n\n[id="topic_{context}"]\n= Topic\n\nSee xref:other_{context}[Other]. The selected context is {context}.\n'
+        missing = convert_text(source)
+        self.assertEqual(missing['status'], 'error')
+        self.assertEqual(missing['missing_attributes'], ['context'])
+        self.assertTrue(any('Possible invalid reference: #other' in d['message'] for d in missing['diagnostics']))
+        explicit = convert_text(source, attributes={'context': 'admin'})
+        self.assertIn('id="topic_admin"', explicit['xml'])
+        self.assertIn('href="#other_admin"', explicit['xml'])
+
+    def test_supplied_topic_vocabulary_table_note_links_and_code(self):
+        source = '''\
+:_mod-docs-content-type: REFERENCE
+
+[id="plugins_{context}"]
+= Plugins
+
+[role="_abstract"]
+Supported plugins and their required variables.
+
+[IMPORTANT]
+====
+Preview features can change.
+====
+
+[%header,cols=4*]
+|===
+|*Name* |*Plugin* |*Version* |*Path and required variables*
+|Example |`https://npmjs.com/package/example[example-plugin]` |1.0.0
+|`./plugins/example`
+
+`EXAMPLE_TOKEN`
+|===
+
+[source,yaml]
+----
+plugins:
+  - example
+----
+'''
+        result = convert_text(source)
+        self.assertEqual(result['status'], 'ok', result)
+        document = etree.fromstring(result['xml'].encode(), PARSER())
+        self.assertEqual(document.get('id'), 'plugins')
+        self.assertIsNotNone(document.find('.//note[@type="important"]'))
+        table = document.find('.//table/tgroup')
+        self.assertEqual(table.get('cols'), '4')
+        self.assertEqual(len(table.findall('colspec')), 4)
+        self.assertEqual(len(table.findall('thead/row/entry')), 4)
+        link = document.find('.//codeph/xref')
+        self.assertEqual(link.get('scope'), 'external')
+        self.assertEqual(link.get('format'), 'html')
+        self.assertEqual(document.find('.//codeblock').get('outputclass'), 'language-yaml')
 
     def test_local_attributes_path_and_include_errors(self):
         with tempfile.TemporaryDirectory() as folder:

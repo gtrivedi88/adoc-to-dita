@@ -20,6 +20,12 @@ cd adoc-dita
 
 Open **http://127.0.0.1:8765**. Setup downloads pinned dependencies. Subsequent standalone conversions and comparisons of locally available Git objects work offline.
 
+### Hosted deployment
+
+The same conversion and comparison features run in a container or OpenShift deployment. Set `ADOC_DITA_BIND_HOST=0.0.0.0` and list the public route host in `ADOC_DITA_ALLOWED_HOSTS`. A hosted browser cannot read paths on a visitor's computer, so users upload local source and attributes files through the form. Network-bound API requests reject server filesystem paths. Release comparison accepts public `https://github.com/OWNER/REPO` URLs and needs outbound DNS and HTTPS access to GitHub.
+
+Comparison jobs are held in process memory. Run one replica unless job state is moved to shared storage; restarting the pod ends active jobs. The application has no built-in login, so put authentication and access controls in front of it when the route is not intended to be public.
+
 ### Convert content
 
 Paste the complete module, or upload an `.adoc` file. Select a type, or use **Detect from content**:
@@ -56,13 +62,15 @@ The CLI retains an advanced `--repository --guide` mode for builds that explicit
 
 Enter a public GitHub repository URL or a local Git repository path, then select two branch names, tags, or commit IDs. **Load releases** populates suggestions. Local repositories may use `origin/release-1.9` when that branch has not been checked out locally. Local repositories are not fetched automatically; run `git fetch` yourself when needed.
 
-Choose your repository and topic paths. Patterns use Python `fnmatch`: `*` also matches subdirectories. The default `*.adoc` selects every AsciiDoc path; narrow it to your topics folder or enter several comma-separated patterns. The scope is individual typed modules, not DITA map or book generation.
+Topic paths are optional. Leave the field blank to inspect all `.adoc` topics in both snapshots, map direct Git changes and dependency effects, and include only topics whose source or generated XML changed. To narrow the run, patterns use Python `fnmatch`: `*` also matches subdirectories, and the field accepts several comma-separated patterns. The scope is individual typed modules, not DITA map or book generation.
+
+As with pasted standalone topics, a missing structural `_{context}` or `-{context}` suffix is removed from topic IDs and xref targets during comparison. Define `context=value` only when the release output must retain a specific guide context. Uses of `{context}` in prose remain unresolved and are reported rather than guessed.
 
 The comparison is **baseline snapshot → target snapshot**, not a pull-request merge-base comparison. The selected refs are resolved to commit IDs and recorded in the report. Your checkout and branches are never switched or modified.
 
 Every selected topic is converted at both commits. This catches changes caused by included snippets, code files, conditions, and shared attributes even when a topic's own source is unchanged. Topics with identical source and XML are omitted. A changed source file with unchanged XML (for example a comment edit) remains in the report.
 
-Set **Guide entry file** to resolve attributes and topic links independently from the guide in **each snapshot**. Only matching topics included by that guide in either snapshot are compared. A topic with multiple active inclusions must be converted individually with an inclusion selection; a missing inclusion is reported as unavailable rather than silently choosing a context. Without a guide, `artifacts/attributes.adoc` is automatically loaded when present, and additional attributes may need to be supplied. Settings also accept other attributes files relative to the repository root. Explicit overrides take precedence over source definitions.
+Set **Guide entry file** to resolve attributes and topic links independently from the guide in **each snapshot**. Only matching topics included by that guide in either snapshot are compared. A topic with multiple active inclusions must be converted individually with an inclusion selection; a missing inclusion is reported as unavailable rather than silently choosing a context. Without a guide, `artifacts/attributes.adoc` is automatically loaded when present. You can enter one attributes file path relative to the repository so that each release uses its own version, or upload one `.adoc` attributes file to apply the same definitions to both releases. Uploaded comparison attributes cannot contain includes because they have no repository-relative directory; use the repository path option when an attributes file has an include chain. Explicit overrides take precedence over every attributes file.
 
 Download the ZIP and open `report.html`, or inspect `report.json`:
 
@@ -101,7 +109,8 @@ cat modules/con-application-configuration-file.adoc | ./adoc-dita convert - \
 # Compare a local documentation repository.
 ./adoc-dita compare /path/to/rhdh \
   --base origin/release-1.9 --target origin/release-1.10 \
-  --include 'modules/*.adoc' -a context=standalone \
+  --include 'modules/*.adoc' \
+  --attribute-file /path/to/attributes.adoc \
   -o results/release-1.9-to-1.10
 
 # Use any repository's guide entry document for a single topic or a release diff.
@@ -115,11 +124,13 @@ cat modules/con-application-configuration-file.adoc | ./adoc-dita convert - \
 ./adoc-dita compare \
   https://github.com/redhat-developer/red-hat-developers-documentation-rhdh \
   --base release-1.9 --target release-1.10 \
-  --include 'modules/*.adoc' -a context=standalone \
+  --include 'modules/*.adoc' \
   -o results/github-comparison
 ```
 
 Use a new/empty comparison output directory to avoid mixing runs. `convert --json` returns XML and diagnostics together. Exit status: `0` successful (possibly with review warnings), `1` invocation/Git/setup error, `2` one or more conversion failures. Comparisons still save successful XML and diagnostics when some topics fail.
+
+For CLI comparisons, a repository-relative `--attribute-file` path loads that file independently from each release. One absolute `--attribute-file` path reads a local file once and applies those definitions to both releases, matching the browser upload behavior.
 
 ## Supported content and limits
 

@@ -55,14 +55,22 @@ class CliEndToEndTests(unittest.TestCase):
         git(self.repo, 'commit', '-m', 'updated')
         git(self.repo, 'tag', 'v2')
         output = self.repo / 'comparison-report'
-        result = self.run_cli('compare', self.repo, '--base', 'v1', '--target', 'v2',
-                              '--include', 'modules/*.adoc', '-a', 'context=standalone', '-o', output)
+        with tempfile.TemporaryDirectory() as folder:
+            uploaded_attributes = Path(folder) / 'attributes.adoc'
+            uploaded_attributes.write_text(':product: CLI uploaded product\n')
+            result = self.run_cli('compare', self.repo, '--base', 'v1', '--target', 'v2',
+                                  '--include', 'modules/*.adoc', '--attribute-file', uploaded_attributes,
+                                  '-o', output)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((output / 'report.html').is_file())
         report = json.loads((output / 'report.json').read_text())
         self.assertEqual(report['summary']['files'], 1)
         self.assertEqual(report['summary']['errors'], 0)
-        self.assertTrue((output / 'after/modules/con-overview.xml').is_file())
+        converted = output / 'after/modules/con-overview.xml'
+        self.assertTrue(converted.is_file())
+        self.assertIn('<concept id="overview">', converted.read_text())
+        self.assertIn('CLI uploaded product', converted.read_text())
+        self.assertEqual(report['settings']['uploaded_attribute_file'], 'attributes.adoc')
 
 
 if __name__ == '__main__':

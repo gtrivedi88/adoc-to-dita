@@ -1,0 +1,9 @@
+.git
+.venv
+vendor/bundle
+.bundle
+.cache
+__pycache__
+*.pyc
+results/
+deploy/

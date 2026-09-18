@@ -6,3 +6,5 @@ __pycache__/
 .cache/
 results/
 .DS_Store
+deploy/
+redeploy.sh

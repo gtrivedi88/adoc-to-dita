@@ -1,13 +1,15 @@
 import json
+import hashlib
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 import io
 from lxml import etree
 from adoc_dita.converter import ROOT, convert_files, convert_text, schema, PARSER
-from adoc_dita.repository import compare, git, refs
+from adoc_dita.repository import compare, git, prepare_repository, refs
 from adoc_dita.report import file_diff, zip_report
 
 
@@ -220,6 +222,8 @@ class ComparisonTests(unittest.TestCase):
         git(self.repo, 'config', 'user.email', 'test@example.invalid')
         git(self.repo, 'config', 'commit.gpgsign', 'false')
         self.write('artifacts/attributes.adoc', ':product: One\n')
+        self.write('assemblies/assembly-guide.adoc', '= Assembly guide\n\ninclude::../modules/changed.adoc[]\n')
+        self.write('modules/con-generated.template.adoc', '= Template\n\n{generated-value}\n')
         self.write('modules/changed.adoc', '= Changed\n\nOriginal text.\n')
         self.write('modules/dependent.adoc', '= Dependent\n\n{product}\n\ninclude::../snippets/shared.adoc[]\n')
         self.write('modules/deleted.adoc', '= Deleted\n\n' + '\n'.join('Remove this old procedure step '+str(i) for i in range(20)) + '\n')
@@ -229,6 +233,8 @@ class ComparisonTests(unittest.TestCase):
         self.commit('baseline'); git(self.repo, 'tag', 'v1')
         self.write('modules/changed.adoc', '= Changed\n\nUpdated text.\n')
         self.write('artifacts/attributes.adoc', ':product: Two\n')
+        self.write('assemblies/assembly-guide.adoc', '= Assembly guide\n\nA changed guide introduction.\n\ninclude::../modules/changed.adoc[]\n')
+        self.write('modules/con-generated.template.adoc', '= Template\n\n{generated-value} changed\n')
         self.write('snippets/shared.adoc', 'Snippet two.\n')
         (self.repo/'modules/deleted.adoc').unlink()
         (self.repo/'modules/rename.adoc').rename(self.repo/'modules/renamed.adoc')
@@ -285,6 +291,59 @@ class ComparisonTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             compare(self.repo, '--help', 'v2')
         self.assertIn('v1', refs(self.repo))
+
+    def test_automatic_scope_lists_but_does_not_convert_assemblies(self):
+        report = compare(self.repo, 'v1', 'v2')
+        converted = {item['after_path'] or item['before_path'] for item in report['files']}
+        self.assertNotIn('assemblies/assembly-guide.adoc', converted)
+        self.assertNotIn('modules/con-generated.template.adoc', converted)
+        assembly = next(change for change in report['changes'] if change['after'] == 'assemblies/assembly-guide.adoc')
+        self.assertEqual(assembly['conversion'], 'dependency-only or no document title')
+
+    def test_uploaded_attributes_apply_to_both_snapshots(self):
+        uploaded = ':product: Uploaded product\n'
+        report = compare(self.repo, 'v1', 'v2', patterns=['modules/dependent.adoc'],
+                         attribute_text=uploaded, attribute_filename='attributes.adoc')
+        item = report['files'][0]
+        self.assertIn('Uploaded product', item['before']['xml'])
+        self.assertIn('Uploaded product', item['after']['xml'])
+        self.assertNotIn('>One<', item['before']['xml'])
+        self.assertNotIn('>Two<', item['after']['xml'])
+        self.assertEqual(report['settings']['uploaded_attribute_file'], 'attributes.adoc')
+        self.assertEqual(report['settings']['uploaded_attribute_sha256'], hashlib.sha256(uploaded.encode()).hexdigest())
+        self.assertNotIn(uploaded, json.dumps(report))
+        self.assertNotIn('.adoc-dita-uploaded-attributes-', json.dumps(report))
+        with self.assertRaisesRegex(ValueError, 'cannot include other files'):
+            compare(self.repo, 'v1', 'v2', patterns=['modules/dependent.adoc'],
+                    attribute_text='include::other.adoc[]\n', attribute_filename='attributes.adoc')
+
+    def test_remote_cache_recovers_an_interrupted_git_fetch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            cache = Path(folder)
+            url = 'https://github.com/example/documentation'
+            normalized_url = url + '.git'
+            repository = cache / hashlib.sha256(normalized_url.encode()).hexdigest()[:24]
+            repository.mkdir()
+            (repository / 'HEAD').write_text('ref: refs/heads/main\n')
+            stale = repository / 'shallow.lock'
+            stale.write_text('interrupted fetch')
+            base_sha, target_sha = 'a' * 40, 'b' * 40
+
+            def fake_git(repo, *args, **_kwargs):
+                if args[0] == 'ls-remote':
+                    return (f'{base_sha}\trefs/heads/base\n'
+                            f'{target_sha}\trefs/heads/target\n').encode()
+                if args[0] == 'fetch':
+                    self.assertFalse(stale.exists())
+                    return b''
+                if args[0] == 'rev-parse':
+                    return (args[-1].removesuffix('^{commit}') + '\n').encode()
+                self.fail(args)
+
+            with patch('adoc_dita.repository.git', side_effect=fake_git):
+                resolved = prepare_repository(url, 'base', 'target', cache=cache)
+            self.assertEqual(resolved, (repository, base_sha, target_sha))
+            self.assertFalse(stale.exists())
 
     def test_removed_title_is_an_error_not_a_deletion(self):
         self.write('modules/changed.adoc', 'The document title was removed.\n')

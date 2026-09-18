@@ -153,10 +153,25 @@ def finalize(raw, kind="auto", references=None):
     return result
 
 
-def convert_files(root, paths, *, attributes=None, attribute_files=None, kind="auto"):
+def convert_files(root, paths, *, attributes=None, attribute_files=None, kind="auto", standalone=False):
     root = Path(root).resolve()
-    requests = [{"root": str(root), "path": p, "attributes": attributes or {}, "attribute_files": attribute_files or []} for p in paths]
-    return _convert_requests(requests, kind)
+    requests = []
+    normalized = []
+    for path in paths:
+        request = {"root": str(root), "path": path, "attributes": attributes or {},
+                   "attribute_files": attribute_files or []}
+        changed = False
+        if standalone:
+            source, changed = standalone_source((root / path).read_text(encoding="utf-8"), attributes)
+            if changed:
+                request["source"] = source
+        requests.append(request)
+        normalized.append(changed)
+    results = _convert_requests(requests, kind)
+    for result, changed in zip(results, normalized):
+        if changed:
+            result["standalone_context"] = "base-id"
+    return results
 
 
 def _convert_requests(requests, kind):

@@ -41,8 +41,11 @@ def main(argv=None):
     for command in [one, diff]:
         command.add_argument("--guide", help="Guide entry file relative to the repository; follows its native include and attribute rules")
         command.add_argument("-a", "--attribute", action="append", default=[], help="Attribute name=value; repeatable")
-        command.add_argument("--attribute-file", action="append", help="Attributes .adoc file; absolute or relative to --root/input folder. Repeatable for compare")
         command.add_argument("--type", choices=["auto", "concept", "task", "reference"], default="auto")
+    one.add_argument("--attribute-file", action="append",
+                     help="Attributes .adoc file; absolute or relative to --root/input folder")
+    diff.add_argument("--attribute-file", action="append",
+                      help="Attributes .adoc file. A repository-relative path reads each release's version; one absolute path applies that local file to both releases")
     listing = sub.add_parser("refs", help="List available branches and tags")
     listing.add_argument("repository")
     server = sub.add_parser("serve", help="Open the local browser interface")
@@ -113,8 +116,23 @@ def main(argv=None):
         output = Path(args.output)
         if output.exists() and (not output.is_dir() or any(output.iterdir())):
             raise ValueError("Choose a new or empty output directory")
+        repository_attribute_files = []
+        uploaded_attribute = None
+        for value in args.attribute_file or []:
+            path = Path(value).expanduser()
+            if not path.is_absolute():
+                repository_attribute_files.append(value)
+                continue
+            if uploaded_attribute:
+                raise ValueError('Comparison accepts one absolute attributes file')
+            if path.suffix.lower() != '.adoc' or not path.is_file():
+                raise ValueError(f'Attributes file not found or not an .adoc file: {path}')
+            uploaded_attribute = path
         report = compare(args.repository, args.base, args.target, patterns=args.include, attributes=attributes,
-                         attribute_files=args.attribute_file, kind=args.type, guide=args.guide,
+                         attribute_files=repository_attribute_files or None,
+                         attribute_text=uploaded_attribute.read_text(encoding='utf-8') if uploaded_attribute else '',
+                         attribute_filename=uploaded_attribute.name if uploaded_attribute else None,
+                         kind=args.type, guide=args.guide,
                          progress=lambda message: print(message, file=sys.stderr))
         save_report(report, output)
         print(json.dumps(report["summary"]))

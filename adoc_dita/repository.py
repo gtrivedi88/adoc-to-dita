@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fnmatch
+import fcntl
 import hashlib
 import io
 import json
@@ -56,30 +57,44 @@ def prepare_repository(value, base, target, cache=None):
     url = remote_url(str(value))
     cache = Path(cache or ROOT / ".cache/repos")
     repo = cache / hashlib.sha256(url.encode()).hexdigest()[:24]
-    repo.mkdir(parents=True, exist_ok=True)
-    if not (repo / "HEAD").exists():
-        git(repo, "init", "--bare")
-    advertised = {}
-    for line in git(ROOT, "ls-remote", "--heads", "--tags", url).decode().splitlines():
-        sha, name = line.split("\t")
-        advertised[name] = sha
-    def fetch(ref):
-        if not ref or ref.startswith("-"):
-            raise ValueError("Invalid release reference")
-        names = [ref] if ref.startswith("refs/") else ["refs/heads/" + ref, "refs/tags/" + ref]
-        names = [name for name in names if name in advertised]
-        if len(names) > 1:
-            raise ValueError(f"Ambiguous branch/tag {ref}; use refs/heads/ or refs/tags/")
-        if names:
-            sha = advertised.get(names[0] + "^{}", advertised[names[0]])
-        elif re.fullmatch(r"[0-9a-fA-F]{40}", ref):
-            sha = ref
-        else:
-            raise ValueError(f"Reference not found: {ref}")
-        # Fetch only the chosen snapshot, pinned to the advertised object ID.
-        git(repo, "fetch", "--no-tags", "--depth=1", url, sha)
-        return resolve(repo, sha)
-    return repo, fetch(base), fetch(target)
+    cache.mkdir(parents=True, exist_ok=True)
+    # Git's own lock files survive a killed process. Serialize this private
+    # cache across CLI processes and remove those stale transaction files only
+    # after acquiring our independent lock.
+    with (cache / (repo.name + ".adoc-dita.lock")).open("a+b") as cache_lock:
+        fcntl.flock(cache_lock, fcntl.LOCK_EX)
+        if repo.is_symlink():
+            raise ValueError("Invalid remote repository cache")
+        repo.mkdir(parents=True, exist_ok=True)
+        for lock in repo.rglob("*.lock"):
+            if lock.is_file() or lock.is_symlink():
+                lock.unlink()
+        if not (repo / "HEAD").exists():
+            git(repo, "init", "--bare")
+        advertised = {}
+        for line in git(ROOT, "ls-remote", "--heads", "--tags", url).decode().splitlines():
+            sha, name = line.split("\t")
+            advertised[name] = sha
+
+        def fetch(ref):
+            if not ref or ref.startswith("-"):
+                raise ValueError("Invalid release reference")
+            names = [ref] if ref.startswith("refs/") else ["refs/heads/" + ref, "refs/tags/" + ref]
+            names = [name for name in names if name in advertised]
+            if len(names) > 1:
+                raise ValueError(f"Ambiguous branch/tag {ref}; use refs/heads/ or refs/tags/")
+            if names:
+                sha = advertised.get(names[0] + "^{}", advertised[names[0]])
+            elif re.fullmatch(r"[0-9a-fA-F]{40}", ref):
+                sha = ref
+            else:
+                raise ValueError(f"Reference not found: {ref}")
+            # Fetch only the chosen snapshot, pinned to the advertised object ID.
+            git(repo, "fetch", "--no-tags", "--depth=1", url, sha)
+            return resolve(repo, sha)
+
+        base_sha, target_sha = fetch(base), fetch(target)
+    return repo, base_sha, target_sha
 
 
 def snapshot(repo, commit, destination):
@@ -130,7 +145,7 @@ def changed_paths(repo, base, target):
     return result
 
 
-def topic_paths(root, patterns):
+def topic_paths(root, patterns, kind="auto"):
     selected = []
     for file in sorted(root.rglob("*.adoc")):
         relative = file.relative_to(root).as_posix()
@@ -139,23 +154,40 @@ def topic_paths(root, patterns):
         text = file.read_text(encoding="utf-8")
         if re.search(r"^:_(?:mod-docs-content-type|content-type|module-type):\s*(SNIPPET|ATTRIBUTES)\s*$", text, re.M | re.I):
             continue
-        if (re.search(r"^=\s+\S", text, re.M)
-                or re.search(r"^:_(?:mod-docs-content-type|content-type|module-type):\s*(CONCEPT|PROCEDURE|REFERENCE)\s*$", text, re.M | re.I)
-                or file.name.startswith(("con-", "proc-", "ref-"))):
+        if kind == "auto" and file.name.endswith(".template.adoc"):
+            continue
+        declared_type = re.search(r"^:_(?:mod-docs-content-type|content-type|module-type):\s*(CONCEPT|PROCEDURE|REFERENCE)\s*$", text, re.M | re.I)
+        named_type = file.name.startswith(("con-", "proc-", "ref-"))
+        # In automatic mode, only select sources whose topic specialization is
+        # deterministic. Assemblies and guide entry documents still remain in
+        # the Git change/dependency inventory, but are not emitted as topics.
+        explicitly_typed = kind != "auto" and re.search(r"^=\s+\S", text, re.M)
+        if declared_type or named_type or explicitly_typed:
             selected.append(relative)
     return selected
 
 
-def compare(repository, base, target, *, patterns=None, attributes=None, attribute_files=None, kind="auto", progress=None, guide=None):
+def compare(repository, base, target, *, patterns=None, attributes=None, attribute_files=None,
+            attribute_text="", attribute_filename=None, kind="auto", progress=None, guide=None):
     progress = progress or (lambda message: None)
     patterns = patterns or ["*.adoc"]
+    attribute_text = attribute_text or ""
+    if attribute_text:
+        if len(attribute_text.encode()) > 2 * 1024 * 1024:
+            raise ValueError("Uploaded attributes file must be smaller than 2 MB")
+        if not attribute_filename or Path(attribute_filename).name != attribute_filename or not attribute_filename.lower().endswith(".adoc"):
+            raise ValueError("Uploaded attributes must use a filename ending in .adoc")
+        if re.search(r"^include::", attribute_text, re.M):
+            raise ValueError("Uploaded comparison attributes cannot include other files. Use repository-relative attribute files for include chains.")
     progress("Resolving the selected Git snapshots…")
     repo, base_sha, target_sha = prepare_repository(repository, base, target)
     changes = changed_paths(repo, base_sha, target_sha)
     touched = {p for change in changes for p in [change["before"], change["after"]] if p}
     report = {"format_version": 1, "repository": str(repository), "base": {"ref": base, "commit": base_sha},
               "target": {"ref": target, "commit": target_sha}, "settings": {"patterns": patterns, "attributes": attributes or {},
-              "attribute_files": attribute_files, "topic_type": kind, "guide": guide},
+              "attribute_files": attribute_files, "uploaded_attribute_file": attribute_filename if attribute_text else None,
+              "uploaded_attribute_sha256": hashlib.sha256(attribute_text.encode()).hexdigest() if attribute_text else None,
+              "topic_type": kind, "guide": guide},
               "toolchain": {"adoc-dita": "0.1.0", "asciidoctor": "2.0.26", "dita-topic": "1.5.3", "dita-convert": "1.4.9", "dita_schema": "1.3-errata02"},
               "changes": [], "files": [], "notes": []}
     if base_sha == target_sha:
@@ -169,14 +201,36 @@ def compare(repository, base, target, *, patterns=None, attributes=None, attribu
             progress(f"Reading the {label} snapshot…")
             root.mkdir()
             snapshot(repo, commit, root)
-        selected = set(topic_paths(roots[0], patterns)) | set(topic_paths(roots[1], patterns))
+        uploaded_path = None
+        if attribute_text:
+            uploaded_path = ".adoc-dita-uploaded-attributes-" + hashlib.sha256(attribute_text.encode()).hexdigest()[:16] + ".adoc"
+            for root in roots:
+                file = root / uploaded_path
+                if file.exists() or file.is_symlink():
+                    raise ValueError("Repository uses the reserved uploaded-attributes path")
+                file.write_text(attribute_text, encoding="utf-8")
+        selected = set(topic_paths(roots[0], patterns, kind)) | set(topic_paths(roots[1], patterns, kind))
+        snapshot_attribute_files = {}
+        for root in roots:
+            if attribute_files is not None:
+                files = list(attribute_files)
+            elif guide:
+                files = []
+            else:
+                files = ["artifacts/attributes.adoc"] if (root / "artifacts/attributes.adoc").is_file() else []
+            if uploaded_path:
+                files.append(uploaded_path)
+            snapshot_attribute_files[root] = files
         guide_data = {}
         if guide:
             from .context import RepositoryContext, convert_repository_files
             included = set()
             for root in roots:
+                files = snapshot_attribute_files[root]
+                if len(files) > 1:
+                    raise ValueError("Guide comparison accepts either one repository attributes file or one uploaded attributes file")
                 index = RepositoryContext(root)
-                inspections = index.inspect([guide], attributes, (attribute_files or [None])[0])
+                inspections = index.inspect([guide], attributes, files[0] if files else None)
                 included.update(o['path'] for i in inspections for o in i['occurrences'])
                 guide_data[root] = (index, inspections)
             if not included:
@@ -185,18 +239,24 @@ def compare(repository, base, target, *, patterns=None, attributes=None, attribu
         for label, root in zip(["baseline", "target"], roots):
             # A title removed in one snapshot is an invalid topic, not a deleted file.
             paths = sorted(path for path in selected if (root / path).is_file())
-            # Auto-load the RHDH shared definitions only when present in that snapshot.
-            attrs_files = attribute_files if attribute_files is not None else (["artifacts/attributes.adoc"] if (root / "artifacts/attributes.adoc").is_file() else [])
+            # Auto-load shared definitions when present, then apply an uploaded
+            # attributes file as the final source-level definition set.
+            attrs_files = snapshot_attribute_files[root]
             progress(f"Converting {len(paths)} {label} topics and checking dependencies…")
             if guide:
                 index, inspections = guide_data[root]
                 items = convert_repository_files(root, paths, guide=guide, attributes=attributes,
-                                                 attribute_files=attribute_files, kind=kind, index=index, inspections=inspections)
+                                                 attribute_files=attrs_files, kind=kind, index=index, inspections=inspections)
             else:
-                items = convert_files(root, paths, attributes=attributes, attribute_files=attrs_files, kind=kind) if paths else []
+                items = convert_files(root, paths, attributes=attributes, attribute_files=attrs_files,
+                                      kind=kind, standalone=True) if paths else []
+            if uploaded_path:
+                for item in items:
+                    item["dependencies"] = [path for path in item.get("dependencies", []) if path != uploaded_path]
             outputs.append({item["path"]: item for item in items})
             sources.append({path: (root / path).read_text(encoding="utf-8") for path in paths})
         old, new = outputs
+        progress("Building the comparison report…")
         renames = {c["after"]: c["before"] for c in changes if c["change"] == "renamed" and c["before"] in old and c["after"] in new}
         pairs = [(renames.get(path, path), path) for path in sorted(new)]
         pairs.extend((path, None) for path in sorted(set(old) - set(new) - set(renames.values())))

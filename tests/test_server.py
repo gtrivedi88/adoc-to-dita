@@ -70,6 +70,7 @@ class ServerEndToEndTests(unittest.TestCase):
 
     def test_local_and_hosted_origins_and_conversion(self):
         self.assertIn('<title>AsciiDoc → DITA</title>', self.page)
+        self.assertIn('03 &nbsp; Convert pull request', self.page)
         token = re.search(r'<script nonce="([^"]+)">', self.page).group(1)
 
         status, _, _ = self.request(
@@ -94,6 +95,13 @@ class ServerEndToEndTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(result['status'], 'ok')
         self.assertIn('<concept id="hosted">', result['xml'])
+
+        status, _, body = self.request(
+            'POST', '/api/pull-request', host='converter.example.test',
+            origin='https://converter.example.test', token=token,
+            data={'pull_request': 'https://example.com/not-a-pr'})
+        self.assertEqual(status, 400)
+        self.assertIn('public GitHub pull request URL', json.loads(body)['error'])
 
     def test_hosted_comparison_accepts_an_uploaded_attributes_file(self):
         token = re.search(r'<script nonce="([^"]+)">', self.page).group(1)

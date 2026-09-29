@@ -1,9 +1,10 @@
 # AsciiDoc → DITA
 
-A local tool for two jobs:
+A local tool for three jobs:
 
 1. Paste or upload AsciiDoc and copy/download validated DITA XML.
 2. Compare two Git branches, tags, or commits and download the affected topics, before/after XML, and readable diffs.
+3. Paste a public GitHub pull request URL and download DITA XML for every changed or dependency-affected topic.
 
 Supports **concept**, **task (procedure)**, and **reference** topics. No Vale, AI service, AEM connection, account, or database is required. The browser interface runs on your computer; GitHub access is only used when you choose a remote repository.
 
@@ -22,7 +23,7 @@ Open **http://127.0.0.1:8765**. Setup downloads pinned dependencies. Subsequent 
 
 ### Hosted deployment
 
-The same conversion and comparison features run in a container or OpenShift deployment. Set `ADOC_DITA_BIND_HOST=0.0.0.0` and list the public route host in `ADOC_DITA_ALLOWED_HOSTS`. A hosted browser cannot read paths on a visitor's computer, so users upload local source and attributes files through the form. Network-bound API requests reject server filesystem paths. Release comparison accepts public `https://github.com/OWNER/REPO` URLs and needs outbound DNS and HTTPS access to GitHub.
+The same conversion and comparison features run in a container or OpenShift deployment. Set `ADOC_DITA_BIND_HOST=0.0.0.0` and list the public route host in `ADOC_DITA_ALLOWED_HOSTS`. A hosted browser cannot read paths on a visitor's computer, so users upload local source and attributes files through the form. Network-bound API requests reject server filesystem paths. Release comparison and pull request conversion accept public GitHub URLs and need outbound DNS and HTTPS access to GitHub.
 
 Comparison jobs are held in process memory. Run one replica unless job state is moved to shared storage; restarting the pod ends active jobs. The application has no built-in login, so put authentication and access controls in front of it when the route is not intended to be public.
 
@@ -54,7 +55,7 @@ product-short=Developer Hub
 context=standalone
 ```
 
-Without an attributes file, pasted and uploaded files are self-contained. An attributes file outside a Git clone is read directly, with includes confined to its folder. Missing attributes are listed once in the UI; unsupported content produces diagnostics instead of silently disappearing. Existing explicit IDs are preserved. Files without an ID receive a stable ID derived from their logical source path.
+Without an attributes file, pasted and uploaded files are self-contained. An attributes file outside a Git clone is read directly, with includes confined to its folder. Missing documentation attributes in prose are listed once in the UI; placeholders inside inline code, code blocks, paths, commands, and configuration examples are preserved literally and are not reported as missing attributes. Unsupported content produces diagnostics instead of silently disappearing. Existing explicit IDs are preserved. Files without an ID receive a stable ID derived from their logical source path.
 
 The CLI retains an advanced `--repository --guide` mode for builds that explicitly need inherited guide attributes and a publication-wide link registry. It is separate from the browser’s paste workflow. The converter does not run repository scripts or infer externally supplied build flags.
 
@@ -86,6 +87,14 @@ diffs/...xml.diff           XML unified diff
 Additions, deletions, and Git-detected renames are reported. Deleted topics only have baseline XML. A conversion failure is explicitly marked as unavailable; it is never represented as an XML deletion. Changed snippets and files without a title are listed as dependencies/non-topics rather than emitted as invalid standalone documents.
 
 **Source and XML hunks are separate diffs, not a one-to-one source map.** Their ranges refer to the exact files in this run. Inserts and deletions have a zero-length side with an `after_line` insertion point. AEM editor line numbers and synchronization are outside Phase 1.
+
+### Convert a pull request
+
+Open **03 Convert pull request** and paste a public URL such as `https://github.com/owner/repository/pull/123`. The tool resolves the PR through GitHub, pins the exact base and head commits, discovers directly changed and dependency-affected `.adoc` topics, and runs the same conversion and validation pipeline used by the other workflows. It does not execute code from the repository.
+
+Leave **Topic paths** blank to process the complete PR. The attributes controls behave like release comparison: use a repository-relative path to read the file independently at the base and PR commits, upload one `.adoc` file to apply it to both, or rely on automatic `artifacts/attributes.adoc` detection. Each successful topic exposes its complete target XML in the page. The ZIP contains target XML under `after/`, base XML when available, source and XML diffs, `report.html`, and `report.json`.
+
+The report records the PR number, title, URL, base/head commit IDs, and conversion settings. If the PR head changes while a job is starting, the run stops instead of mixing snapshots. A hosted deployment requires outbound HTTPS access to `api.github.com` and `github.com`. Set an optional `GITHUB_TOKEN` environment variable on busy shared deployments to use GitHub's authenticated API rate limit; the token is never included in reports.
 
 ## CLI
 
@@ -126,6 +135,12 @@ cat modules/con-application-configuration-file.adoc | ./adoc-dita convert - \
   --base release-1.9 --target release-1.10 \
   --include 'modules/*.adoc' \
   -o results/github-comparison
+
+# Convert all changed and impacted topics in a public GitHub pull request.
+./adoc-dita pull-request \
+  https://github.com/redhat-developer/red-hat-developers-documentation-rhdh/pull/123 \
+  --attribute-file artifacts/attributes.adoc \
+  -o results/pr-123
 ```
 
 Use a new/empty comparison output directory to avoid mixing runs. `convert --json` returns XML and diagnostics together. Exit status: `0` successful (possibly with review warnings), `1` invocation/Git/setup error, `2` one or more conversion failures. Comparisons still save successful XML and diagnostics when some topics fail.

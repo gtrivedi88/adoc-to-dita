@@ -13,6 +13,8 @@ import subprocess
 import tarfile
 import tempfile
 from urllib.parse import urlsplit
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from .converter import ROOT, convert_files
 from .report import file_diff
@@ -34,6 +36,65 @@ def remote_url(value):
     if len(pieces) != 2 or not all(re.fullmatch(r"[A-Za-z0-9_.-]+", x) and x not in (".", "..") for x in pieces):
         raise ValueError("Use a repository URL, without /tree/ or /blob/")
     return "https://github.com/" + "/".join(pieces) + ".git"
+
+
+def pull_request_location(value):
+    parts = urlsplit(str(value).strip())
+    if parts.scheme != "https" or parts.hostname != "github.com" or parts.username or parts.password:
+        raise ValueError("Use a public GitHub pull request URL such as https://github.com/OWNER/REPO/pull/123")
+    pieces = parts.path.strip("/").split("/")
+    if (len(pieces) not in (4, 5) or pieces[2] != "pull" or not pieces[3].isdigit()
+            or (len(pieces) == 5 and pieces[4] not in {"checks", "commits", "files"})
+            or not all(re.fullmatch(r"[A-Za-z0-9_.-]+", piece) for piece in pieces[:2])):
+        raise ValueError("Use a public GitHub pull request URL such as https://github.com/OWNER/REPO/pull/123")
+    owner, repository, _, number = pieces[:4]
+    if int(number) < 1:
+        raise ValueError("Pull request number must be positive")
+    return owner, repository.removesuffix(".git"), int(number)
+
+
+def pull_request_metadata(value):
+    owner, repository, number = pull_request_location(value)
+    api_url = f"https://api.github.com/repos/{owner}/{repository}/pulls/{number}"
+    request = Request(api_url, headers={
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "adoc-dita/0.2.0",
+        "X-GitHub-Api-Version": "2022-11-28",
+    })
+    if token := os.environ.get("GITHUB_TOKEN", "").strip():
+        request.add_header("Authorization", "Bearer " + token)
+    try:
+        with urlopen(request, timeout=30) as response:
+            payload = response.read(1024 * 1024 + 1)
+    except HTTPError as error:
+        if error.code == 404:
+            raise ValueError("GitHub pull request not found or not public") from error
+        if error.code == 403:
+            raise ValueError("GitHub API rate limit reached. Try again later.") from error
+        raise ValueError(f"GitHub could not load the pull request (HTTP {error.code})") from error
+    except URLError as error:
+        raise ValueError(f"Could not reach GitHub: {error.reason}") from error
+    if len(payload) > 1024 * 1024:
+        raise ValueError("GitHub pull request response exceeded 1 MB")
+    try:
+        data = json.loads(payload)
+        base = data["base"]
+        head = data["head"]
+        full_name = data["base"]["repo"]["full_name"]
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        raise ValueError("GitHub returned an invalid pull request response") from error
+    if full_name.casefold() != f"{owner}/{repository}".casefold():
+        raise ValueError("Pull request base repository does not match its URL")
+    return {
+        "url": f"https://github.com/{owner}/{repository}/pull/{number}",
+        "number": number,
+        "title": str(data.get("title") or f"Pull request #{number}"),
+        "state": str(data.get("state") or "unknown"),
+        "repository": f"https://github.com/{owner}/{repository}",
+        "base": {"ref": str(base["ref"]), "commit": str(base["sha"])},
+        "target": {"ref": f"refs/pull/{number}/head", "label": str(head.get("label") or "PR head"),
+                   "commit": str(head["sha"])},
+    }
 
 
 def refs(repo):
@@ -79,6 +140,12 @@ def prepare_repository(value, base, target, cache=None):
         def fetch(ref):
             if not ref or ref.startswith("-"):
                 raise ValueError("Invalid release reference")
+            if re.fullmatch(r"refs/pull/[1-9][0-9]*/head", ref):
+                lines = git(ROOT, "ls-remote", url, ref).decode().splitlines()
+                if len(lines) != 1:
+                    raise ValueError("Pull request head is not available")
+                sha, name = lines[0].split("\t")
+                advertised[name] = sha
             names = [ref] if ref.startswith("refs/") else ["refs/heads/" + ref, "refs/tags/" + ref]
             names = [name for name in names if name in advertised]
             if len(names) > 1:
@@ -188,7 +255,7 @@ def compare(repository, base, target, *, patterns=None, attributes=None, attribu
               "attribute_files": attribute_files, "uploaded_attribute_file": attribute_filename if attribute_text else None,
               "uploaded_attribute_sha256": hashlib.sha256(attribute_text.encode()).hexdigest() if attribute_text else None,
               "topic_type": kind, "guide": guide},
-              "toolchain": {"adoc-dita": "0.1.0", "asciidoctor": "2.0.26", "dita-topic": "1.5.3", "dita-convert": "1.4.9", "dita_schema": "1.3-errata02"},
+              "toolchain": {"adoc-dita": "0.2.0", "asciidoctor": "2.0.26", "dita-topic": "1.5.3", "dita-convert": "1.4.9", "dita_schema": "1.3-errata02"},
               "changes": [], "files": [], "notes": []}
     if base_sha == target_sha:
         report["summary"] = {"files": 0, "errors": 0, "review": 0, "xml_changed": 0}
@@ -298,4 +365,32 @@ def compare(repository, base, target, *, patterns=None, attributes=None, attribu
         report["notes"] = ["Source and XML hunks are separate diffs, not a one-to-one source map.",
                            "Every selected topic is converted at both commits to detect include and attribute effects.",
                            "Images and other assets are referenced, not copied. Cross-file links may need review."]
+    return report
+
+
+def compare_pull_request(pull_request_url, *, patterns=None, attributes=None, attribute_files=None,
+                         attribute_text="", attribute_filename=None, kind="auto", progress=None, guide=None):
+    progress = progress or (lambda message: None)
+    progress("Resolving the GitHub pull request…")
+    metadata = pull_request_metadata(pull_request_url)
+    # GitHub's PR base SHA is the comparison base for this PR. The named base
+    # branch can advance independently and must not pull unrelated later work
+    # into the conversion.
+    report = compare(metadata["repository"], metadata["base"]["commit"], metadata["target"]["ref"],
+                     patterns=patterns, attributes=attributes, attribute_files=attribute_files,
+                     attribute_text=attribute_text, attribute_filename=attribute_filename,
+                     kind=kind, progress=progress, guide=guide)
+    if (report["base"]["commit"] != metadata["base"]["commit"]
+            or report["target"]["commit"] != metadata["target"]["commit"]):
+        raise ValueError("The pull request changed during conversion. Run it again to use one consistent head commit.")
+    report["base"]["ref"] = metadata["base"]["ref"]
+    report["target"]["ref"] = f"PR #{metadata['number']}"
+    report["pull_request"] = metadata
+    report["settings"]["workflow"] = "pull_request"
+    targets = [item.get("after") for item in report["files"] if item.get("after")]
+    report["summary"].update(
+        target_errors=sum(item["status"] == "error" for item in targets),
+        target_review=sum(item["status"] == "review" for item in targets),
+        target_xml=sum(bool(item.get("xml")) for item in targets),
+    )
     return report

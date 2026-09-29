@@ -9,7 +9,9 @@ import zipfile
 import io
 from lxml import etree
 from adoc_dita.converter import ROOT, convert_files, convert_text, schema, PARSER
-from adoc_dita.repository import compare, git, prepare_repository, refs
+from adoc_dita.repository import (compare, compare_pull_request, git,
+                                  prepare_repository, pull_request_location,
+                                  pull_request_metadata, refs)
 from adoc_dita.report import file_diff, zip_report
 
 
@@ -72,6 +74,39 @@ class ConversionTests(unittest.TestCase):
         changed = convert_text(source.replace('A & B', 'B & C'), kind='concept')
         self.assertEqual(etree.fromstring(one['xml'].encode(), PARSER()).get('id'), etree.fromstring(changed['xml'].encode(), PARSER()).get('id'))
 
+    def test_literal_placeholders_are_not_documentation_attributes(self):
+        source = '''\
+:_mod-docs-content-type: REFERENCE
+
+= Configuration variables
+
+Use `backstage-{cr-name}` in the configuration. Store ${TOKEN} in your secrets.
+
+[%header,cols=1*]
+|===
+|Value
+|`{secret-name}`
+|===
+
+[source,yaml]
+----
+name: {bucket_name}
+password: {postgresql_admin_password}
+----
+'''
+        result = convert_text(source)
+        self.assertEqual(result['status'], 'ok', result)
+        self.assertEqual(result['missing_attributes'], [])
+        self.assertIn('backstage-{cr-name}', result['xml'])
+        self.assertIn('${TOKEN}', result['xml'])
+        self.assertIn('{secret-name}', result['xml'])
+        self.assertIn('name: {bucket_name}', result['xml'])
+        prose = convert_text('= Missing\n\nUse {product-name}.\n', kind='concept')
+        self.assertEqual(prose['status'], 'error')
+        self.assertEqual(prose['missing_attributes'], ['product-name'])
+        self.assertEqual(sum(d['message'] == 'Unresolved documentation attribute: product-name'
+                             for d in prose['diagnostics']), 1)
+
     def test_invalid_or_incomplete_input_is_not_success(self):
         for source in ['', 'No title\n', '= Broken\n\n{missing}\n', '= Broken\n\n++++\n<notdita/>\n++++\n']:
             result = convert_text(source, kind="concept")
@@ -119,6 +154,10 @@ class ConversionTests(unittest.TestCase):
         explicit = convert_text(source, attributes={'context': 'admin'})
         self.assertIn('id="topic_admin"', explicit['xml'])
         self.assertIn('href="#other_admin"', explicit['xml'])
+        link_source = ':_mod-docs-content-type: CONCEPT\n\n[id="topic_{context}"]\n= Topic\n\nSee {book-url}#chapter_{context}[Chapter].\n'
+        standalone = convert_text(link_source, attributes={'book-url': 'https://example.com/book'})
+        self.assertEqual(standalone['status'], 'ok', standalone)
+        self.assertIn('href="https://example.com/book#chapter"', standalone['xml'])
 
     def test_supplied_topic_vocabulary_table_note_links_and_code(self):
         source = '''\
@@ -291,6 +330,53 @@ class ComparisonTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             compare(self.repo, '--help', 'v2')
         self.assertIn('v1', refs(self.repo))
+
+    def test_pull_request_url_metadata_and_exact_snapshot_routing(self):
+        self.assertEqual(pull_request_location('https://github.com/example/docs/pull/42'),
+                         ('example', 'docs', 42))
+        self.assertEqual(pull_request_location('https://github.com/example/docs/pull/42/files?diff=split#top'),
+                         ('example', 'docs', 42))
+        for invalid in ['http://github.com/example/docs/pull/42',
+                        'https://github.com/example/docs/pulls/42',
+                        'https://github.com/example/docs/pull/42/unrelated',
+                        'https://github.com/example/docs/pull/0',
+                        'https://example.com/example/docs/pull/42']:
+            with self.assertRaises(ValueError):
+                pull_request_location(invalid)
+
+        payload = {'title': 'Update docs', 'state': 'open',
+                   'base': {'ref': 'main', 'sha': 'a' * 40,
+                            'repo': {'full_name': 'example/docs'}},
+                   'head': {'label': 'writer:update', 'sha': 'b' * 40}}
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return json.dumps(payload).encode()
+
+        with patch('adoc_dita.repository.urlopen', return_value=Response()):
+            metadata = pull_request_metadata('https://github.com/example/docs/pull/42')
+        self.assertEqual(metadata['target']['ref'], 'refs/pull/42/head')
+        self.assertEqual(metadata['repository'], 'https://github.com/example/docs')
+
+        converted = {'base': {'ref': 'main', 'commit': 'a' * 40},
+                     'target': {'ref': 'refs/pull/42/head', 'commit': 'b' * 40},
+                     'settings': {}, 'summary': {'files': 1, 'errors': 0,
+                                                'review': 0, 'xml_changed': 1},
+                     'files': [], 'changes': []}
+        with patch('adoc_dita.repository.pull_request_metadata', return_value=metadata), \
+                patch('adoc_dita.repository.compare', return_value=converted) as routed:
+            report = compare_pull_request(metadata['url'], patterns=['modules/*.adoc'])
+        routed.assert_called_once()
+        self.assertEqual(routed.call_args.args[:3],
+                         (metadata['repository'], 'a' * 40, 'refs/pull/42/head'))
+        self.assertEqual(report['target']['ref'], 'PR #42')
+        self.assertEqual(report['settings']['workflow'], 'pull_request')
 
     def test_automatic_scope_lists_but_does_not_convert_assemblies(self):
         report = compare(self.repo, 'v1', 'v2')

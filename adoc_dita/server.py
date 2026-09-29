@@ -24,7 +24,7 @@ from urllib.parse import urlsplit, parse_qs
 
 from .cli import parse_attributes
 from .context import convert_standalone
-from .repository import compare, refs
+from .repository import compare, compare_pull_request, pull_request_location, refs
 from .report import zip_report
 
 
@@ -110,10 +110,15 @@ def serve(port=8765):
                         result = convert_standalone(data['source'], **options, attribute_file=attribute_file,
                                                     attribute_text=data.get('attribute_text', ''))
                     return self.respond(200, result)
-                if self.path == "/api/compare":
-                    repository = data["repository"]
-                    if network_workspace and not str(repository).startswith("https://github.com/"):
-                        raise ValueError("Hosted comparisons require a public https://github.com/OWNER/REPO URL")
+                if self.path in ("/api/compare", "/api/pull-request"):
+                    pull_request = self.path == "/api/pull-request"
+                    if pull_request:
+                        pull_request_url = data.get("pull_request", "")
+                        pull_request_location(pull_request_url)
+                    else:
+                        repository = data["repository"]
+                        if network_workspace and not str(repository).startswith("https://github.com/"):
+                            raise ValueError("Hosted comparisons require a public https://github.com/OWNER/REPO URL")
                     attribute_files = data.get("attribute_files") or []
                     if not isinstance(attribute_files, list) or any(not isinstance(path, str) for path in attribute_files):
                         raise ValueError("Attributes file paths must be a list")
@@ -134,21 +139,28 @@ def serve(port=8765):
                     else:
                         attribute_text = data.get("attribute_text", "")
                         attribute_filename = data.get("attribute_filename") or None
-                    options = dict(repository=data["repository"], base=data["base"], target=data["target"],
-                                   patterns=data.get("patterns") or None,
+                    options = dict(patterns=data.get("patterns") or None,
                                    attributes=parse_attributes(data.get("attributes", "").splitlines()),
                                    attribute_files=attribute_files or None, kind=data.get("type", "auto"),
                                    attribute_text=attribute_text,
                                    attribute_filename=attribute_filename,
                                    guide=data.get('guide', '').strip() or None)
+                    if pull_request:
+                        options["pull_request_url"] = pull_request_url
+                        operation = compare_pull_request
+                        starting = "Starting pull request conversion…"
+                    else:
+                        options.update(repository=repository, base=data["base"], target=data["target"])
+                        operation = compare
+                        starting = "Starting comparison…"
                     with jobs_lock:
                         if any(job["status"] == "running" for job in jobs.values()):
                             return self.respond(409, {"error": "A comparison is already running"})
                         while len(jobs) >= 8:
                             jobs.pop(next(iter(jobs)))
                         job_id = secrets.token_hex(12)
-                        jobs[job_id] = {"status": "running", "message": "Starting comparison…",
-                                        "timeline": ["Starting comparison…"]}
+                        jobs[job_id] = {"status": "running", "message": starting,
+                                        "timeline": [starting]}
                     def progress(message):
                         with jobs_lock:
                             jobs[job_id]["message"] = message
@@ -157,7 +169,7 @@ def serve(port=8765):
                     def work():
                         try:
                             with conversion_lock:
-                                report = compare(**options, progress=progress)
+                                report = operation(**options, progress=progress)
                             with jobs_lock:
                                 timeline = jobs[job_id]["timeline"] + ["Comparison complete. ZIP ready to download."]
                                 jobs[job_id] = {"status": "complete", "message": timeline[-1],

@@ -55,7 +55,9 @@ def convert_one(request)
   Thread.current[:dependencies] = []
   logger = Asciidoctor::MemoryLogger.new
   attributes = request.fetch('attributes', {}).merge({
-    'showtitle' => '', 'attribute-missing' => 'warn', 'outfilesuffix' => '.xml',
+    # Preserve unresolved references so Python can distinguish documentation
+    # attributes from literal placeholders after DITA inline markup exists.
+    'showtitle' => '', 'attribute-missing' => 'skip', 'outfilesuffix' => '.xml',
     'allow-uri-read' => nil, 'max-include-depth' => 32,
     'localdate' => '1970-01-01', 'docdate' => '1970-01-01',
     'localyear' => '1970', 'docyear' => '1970',

@@ -18,6 +18,42 @@ from dita import convert as dita_convert
 ROOT = Path(__file__).resolve().parent.parent
 KINDS = {"CONCEPT": "concept", "PROCEDURE": "task", "REFERENCE": "reference"}
 PARSER = lambda: etree.XMLParser(resolve_entities=False, load_dtd=False, no_network=True)
+# ``${NAME}`` is a runtime/environment variable spelling, not an AsciiDoc
+# document attribute. Literal DITA elements are excluded separately below.
+ATTRIBUTE_REFERENCE = re.compile(r"(?<!\$)\{([A-Za-z_][A-Za-z0-9_-]*)\}")
+LITERAL_DITA_ELEMENTS = {"codeblock", "codeph", "filepath", "msgblock", "screen", "userinput"}
+
+
+def unresolved_documentation_attributes(root):
+    """Find unresolved attributes outside literal/code DITA content.
+
+    AsciiDoc uses the same ``{name}`` spelling for document attributes and for
+    placeholders shown to readers. Once converted, inline literals are explicit
+    DITA elements, so this classification does not depend on product-specific
+    variable names.
+    """
+    missing = set()
+
+    def is_literal(node):
+        while node is not None:
+            if not isinstance(node.tag, str):
+                node = node.getparent()
+                continue
+            if etree.QName(node).localname in LITERAL_DITA_ELEMENTS:
+                return True
+            node = node.getparent()
+        return False
+
+    for element in root.iter():
+        if not is_literal(element):
+            if element.text:
+                missing.update(ATTRIBUTE_REFERENCE.findall(element.text))
+            for value in element.attrib.values():
+                missing.update(ATTRIBUTE_REFERENCE.findall(value))
+        # A tail belongs to the parent content model, outside this element.
+        if element.tail and not is_literal(element.getparent()):
+            missing.update(ATTRIBUTE_REFERENCE.findall(element.tail))
+    return sorted(missing)
 
 
 def standalone_source(source, attributes=None):
@@ -52,6 +88,17 @@ def standalone_source(source, attributes=None):
 
         line = re.sub(r"(\bxref:)([^\[\s]+)", clean_target, line)
         line = re.sub(r"(<<)([^,>\s]+)", clean_target, line)
+
+        # Modular guides also use an attribute-expanded URL followed by a
+        # guide-context fragment: {book-url}#topic_{context}[Link text].
+        # It is structural in the same way as xref:topic_{context}[...].
+        def clean_bracketed_link(match):
+            nonlocal changed
+            updated = without_context(match.group(1))
+            changed = changed or updated != match.group(1)
+            return updated
+
+        line = re.sub(r"([^\s\[]+#[^\s\[]+)(?=\[)", clean_bracketed_link, line)
         lines.append(line)
     return "".join(lines), changed
 
@@ -74,10 +121,11 @@ def finalize(raw, kind="auto", references=None):
         detected = {"con": "concept", "proc": "task", "ref": "reference"}.get(prefix)
     result["topic_type"] = detected if kind == "auto" else kind
     diagnostics = result.setdefault("diagnostics", [])
-    result["missing_attributes"] = sorted({
+    missing_attributes = {
         match.group(1) for diagnostic in diagnostics
         if (match := re.search(r"skipping reference to missing attribute: ([\w-]+)", diagnostic["message"]))
-    })
+    }
+    result["missing_attributes"] = sorted(missing_attributes)
     if not result["topic_type"]:
         diagnostics.append({"severity": "error", "message": "Select Concept, Task, or Reference; or add :_mod-docs-content-type: CONCEPT, PROCEDURE, or REFERENCE to the source."})
     if not raw.get("xml") or any(d["severity"] == "error" for d in diagnostics):
@@ -92,6 +140,12 @@ def finalize(raw, kind="auto", references=None):
         for error in transform.error_log:
             diagnostics.append({"severity": "error", "message": str(error.message)})
         root = transformed.getroot()
+        missing_attributes.update(unresolved_documentation_attributes(root))
+        if missing_attributes:
+            diagnostics.extend({"severity": "error", "message": f"Unresolved documentation attribute: {name}"}
+                               for name in sorted(missing_attributes)
+                               if not any(d["message"].endswith("missing attribute: " + name) for d in diagnostics))
+        result["missing_attributes"] = sorted(missing_attributes)
         # A guide's native ID registry proves which module owns a cross-topic anchor.
         targets = {}
         for ref in references or []:

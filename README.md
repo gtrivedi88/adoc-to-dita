@@ -84,9 +84,13 @@ before/modules/example.xml  Valid baseline XML, when available
 after/modules/example.xml   Valid target XML, when available
 diffs/...source.diff        AsciiDoc unified diff
 diffs/...xml.diff           XML unified diff
+diffs/...source.no-change.txt  Topic included without a content-line change
+diffs/...xml.no-change.txt     Conversion succeeded; generated XML is identical
+diffs/...xml.unavailable.txt   Conversion failed; diagnostics explain why
+diffs/README.txt               Meaning of every diff artifact
 ```
 
-Additions, deletions, and Git-detected renames are reported. Deleted topics only have baseline XML. A conversion failure is explicitly marked as unavailable; it is never represented as an XML deletion. Changed snippets and files without a title are listed as dependencies/non-topics rather than emitted as invalid standalone documents.
+Additions, deletions, and Git-detected renames are reported. A successfully converted addition has a complete XML unified diff from `/dev/null` to the new `.xml` file. Deleted topics only have baseline XML. A conversion failure is explicitly marked as unavailable; it is never represented as an XML deletion. The bundle does not write empty diff artifacts: a `.no-change.txt` or `.unavailable.txt` file explains why no patch exists. Changed snippets and files without a title are listed as dependencies/non-topics rather than emitted as invalid standalone documents.
 
 **Source and XML hunks are separate diffs, not a one-to-one source map.** Their ranges refer to the exact files in this run. Inserts and deletions have a zero-length side with an `after_line` insertion point. AEM editor line numbers and synchronization are outside Phase 1.
 

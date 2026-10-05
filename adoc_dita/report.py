@@ -7,6 +7,26 @@ from pathlib import Path
 import zipfile
 
 
+DIFFS_README = """Comparison diff artifacts
+=========================
+
+*.source.diff contains a unified AsciiDoc diff when the topic source changed.
+*.xml.diff contains a unified DITA XML diff when both required conversions succeeded.
+
+For a newly added topic, the XML diff starts at /dev/null and contains the complete
+generated XML as added lines. For a deleted topic, it ends at /dev/null.
+
+Empty diff files are not written. Instead:
+* *.source.no-change.txt means the topic was included without a content-line change,
+  for example because a dependency changed or Git detected a content-identical rename.
+* *.xml.no-change.txt means conversion succeeded but generated XML is identical.
+* *.xml.unavailable.txt means an XML diff could not be created because conversion failed.
+
+See report.html for a readable report and report.json for statuses, diagnostics, and
+exact source and XML line ranges.
+"""
+
+
 def file_diff(before, after, old_name, new_name):
     a, b = before.splitlines(), after.splitlines()
     hunks = []
@@ -49,16 +69,64 @@ body{{font:16px system-ui,sans-serif;background:#f4f5f7;color:#17202e;max-width:
 <p>{esc(notes)}</p>{''.join(cards) or '<article>No affected topics.</article>'}<p>See report.json for exact line ranges and all changed files.</p></html>'''
 
 
+def _conversion_status(item, side):
+    converted = item.get(side)
+    return "not present" if converted is None else converted.get("status", "unknown")
+
+
+def _unavailable_xml_note(item, name):
+    lines = [
+        "XML diff unavailable because a required AsciiDoc-to-DITA conversion failed.",
+        f"Topic: {name}",
+        f"Baseline conversion: {_conversion_status(item, 'before')}",
+        f"Target conversion: {_conversion_status(item, 'after')}",
+    ]
+    diagnostics = []
+    for side in ("before", "after"):
+        converted = item.get(side)
+        if not converted:
+            continue
+        for diagnostic in converted.get("diagnostics", []):
+            diagnostics.append(f"- {side}: {diagnostic.get('severity', 'error')}: {diagnostic.get('message', '')}")
+    if diagnostics:
+        lines.extend(("", "Diagnostics:", *diagnostics))
+    lines.extend(("", "No XML deletion or addition is implied. See report.json for structured details."))
+    return "\n".join(lines) + "\n"
+
+
 def bundle_files(report):
-    files = {"report.json": json.dumps(report, indent=2, ensure_ascii=False) + "\n", "report.html": report_html(report)}
+    files = {
+        "report.json": json.dumps(report, indent=2, ensure_ascii=False) + "\n",
+        "report.html": report_html(report),
+        "diffs/README.txt": DIFFS_README,
+    }
     for item in report["files"]:
         for side in ["before", "after"]:
             converted = item[side]
             if converted and converted.get("xml"):
                 files[side + "/" + converted["output_path"]] = converted["xml"]
         name = item["after_path"] or item["before_path"]
-        files["diffs/" + name + ".source.diff"] = item["source_diff"]["patch"]
-        files["diffs/" + name + ".xml.diff"] = item["xml_diff"]["patch"]
+        source_patch = item["source_diff"]["patch"]
+        if source_patch:
+            files["diffs/" + name + ".source.diff"] = source_patch
+        else:
+            files["diffs/" + name + ".source.no-change.txt"] = (
+                "No direct AsciiDoc content change. The comparison included this topic with status "
+                f"{item.get('change', 'unknown')}.\n"
+            )
+
+        xml_diff = item["xml_diff"]
+        xml_patch = xml_diff["patch"]
+        if item.get("change") == "added" and (item.get("after") or {}).get("xml") and not xml_patch:
+            raise ValueError(f"Internal error: added topic {name} has generated XML but no XML diff")
+        if xml_patch:
+            files["diffs/" + name + ".xml.diff"] = xml_patch
+        elif xml_diff.get("unavailable"):
+            files["diffs/" + name + ".xml.unavailable.txt"] = _unavailable_xml_note(item, name)
+        else:
+            files["diffs/" + name + ".xml.no-change.txt"] = (
+                "Conversion succeeded, but the generated DITA XML is identical in both snapshots.\n"
+            )
     return files
 
 

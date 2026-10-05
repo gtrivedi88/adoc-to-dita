@@ -349,6 +349,12 @@ class ComparisonTests(unittest.TestCase):
             self.assertIn('after/modules/added.xml', archive.namelist())
             self.assertIn('before/modules/deleted.xml', archive.namelist())
             self.assertIn('report.html', archive.namelist())
+            self.assertIn('diffs/README.txt', archive.namelist())
+            added_xml_diff = archive.read('diffs/modules/added.adoc.xml.diff').decode()
+            self.assertIn('--- /dev/null', added_xml_diff)
+            self.assertIn('+++ modules/added.xml', added_xml_diff)
+            self.assertIn('<concept', added_xml_diff)
+            self.assertTrue(all(archive.getinfo(name).file_size > 0 for name in archive.namelist()))
 
     def test_invalid_target_has_no_fake_deletion_diff(self):
         self.write('modules/changed.adoc', '= Broken\n\n{undefined}\n')
@@ -358,6 +364,12 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual(item['after']['status'], 'error')
         self.assertTrue(item['xml_diff']['unavailable'])
         self.assertIsNone(item['xml_changed'])
+        with zipfile.ZipFile(io.BytesIO(zip_report(report))) as archive:
+            names = archive.namelist()
+            self.assertNotIn('diffs/modules/changed.adoc.xml.diff', names)
+            unavailable = archive.read('diffs/modules/changed.adoc.xml.unavailable.txt').decode()
+            self.assertIn('Target conversion: error', unavailable)
+            self.assertIn('No XML deletion or addition is implied.', unavailable)
 
     def test_empty_comparison_and_bad_refs(self):
         report = compare(self.repo, 'v1', 'v1')

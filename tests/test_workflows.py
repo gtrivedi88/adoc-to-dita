@@ -203,6 +203,41 @@ plugins:
         self.assertEqual(link.get('format'), 'html')
         self.assertEqual(document.find('.//codeblock').get('outputclass'), 'language-yaml')
 
+    def test_task_preserves_non_list_content_around_procedure_steps(self):
+        source = '''\
+:_mod-docs-content-type: PROCEDURE
+
+[id="configure_{context}"]
+= Configure the service
+
+[role="_abstract"]
+Configure the service safely.
+
+.Procedure
+
+Read the settings before starting.
+
+. Open the configuration.
+. Save the configuration.
++
+The following table describes the result.
+
+[cols="2",options="header"]
+|===
+| Setting | Result
+| enabled | The service starts.
+|===
+'''
+        result = convert_text(source)
+        self.assertEqual(result['status'], 'review', result)
+        document = etree.fromstring(result['xml'].encode(), PARSER())
+        self.assertEqual(document.findtext('.//context/p'), 'Read the settings before starting.')
+        self.assertEqual(document.findtext('.//steps/step[2]/cmd').strip(), 'Save the configuration.')
+        self.assertIsNotNone(document.find('.//steps/step[2]/info/table'))
+        self.assertFalse(any('skipping' in d['message'] for d in result['diagnostics']))
+        self.assertTrue(any('Preserved 2 non-list procedure element' in d['message']
+                            for d in result['diagnostics']))
+
     def test_local_attributes_path_and_include_errors(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -331,6 +366,36 @@ class ComparisonTests(unittest.TestCase):
             compare(self.repo, '--help', 'v2')
         self.assertIn('v1', refs(self.repo))
 
+    def test_comparison_converts_only_changed_and_dependency_affected_topics(self):
+        for number in range(15):
+            self.write(f'modules/stable-{number}.adoc', f'= Stable {number}\n\nUnchanged.\n')
+        self.commit('many stable topics')
+        git(self.repo, 'tag', 'many-stable')
+        self.write('modules/changed.adoc', '= Changed\n\nOnly this topic changed again.\n')
+        self.commit('one topic changed')
+        progress = []
+        report = compare(self.repo, 'many-stable', 'HEAD', progress=progress.append)
+        self.assertEqual(report['summary']['files'], 1)
+        self.assertTrue(any(message == 'Converting 1 baseline topics and checking dependencies…'
+                            for message in progress), progress)
+        self.assertTrue(any(message == 'Converting 1 target topics and checking dependencies…'
+                            for message in progress), progress)
+
+    def test_dependency_mapping_resolves_include_path_attributes(self):
+        self.write('artifacts/attributes.adoc', ':product: Two\n:snippet-dir: snippets\n')
+        self.write('modules/dependent.adoc', '= Dependent\n\ninclude::{snippet-dir}/shared.adoc[]\n')
+        self.commit('attribute include baseline')
+        git(self.repo, 'tag', 'attribute-include-base')
+        self.write('snippets/shared.adoc', 'Changed through an attribute-expanded include.\n')
+        self.commit('attribute include target')
+        progress = []
+        report = compare(self.repo, 'attribute-include-base', 'HEAD', progress=progress.append)
+        self.assertEqual(report['summary']['files'], 1, report)
+        self.assertEqual(report['files'][0]['change'], 'dependency')
+        self.assertIn('snippets/shared.adoc', report['files'][0]['affected_dependencies'])
+        self.assertTrue(any(message == 'Converting 1 target topics and checking dependencies…'
+                            for message in progress), progress)
+
     def test_pull_request_url_metadata_and_exact_snapshot_routing(self):
         self.assertEqual(pull_request_location('https://github.com/example/docs/pull/42'),
                          ('example', 'docs', 42))
@@ -348,8 +413,12 @@ class ComparisonTests(unittest.TestCase):
                    'base': {'ref': 'main', 'sha': 'a' * 40,
                             'repo': {'full_name': 'example/docs'}},
                    'head': {'label': 'writer:update', 'sha': 'b' * 40}}
+        comparison = {'merge_base_commit': {'sha': 'c' * 40}}
 
         class Response:
+            def __init__(self, value):
+                self.value = value
+
             def __enter__(self):
                 return self
 
@@ -357,14 +426,16 @@ class ComparisonTests(unittest.TestCase):
                 return False
 
             def read(self, _limit):
-                return json.dumps(payload).encode()
+                return json.dumps(self.value).encode()
 
-        with patch('adoc_dita.repository.urlopen', return_value=Response()):
+        with patch('adoc_dita.repository.urlopen', side_effect=[Response(payload), Response(comparison)]):
             metadata = pull_request_metadata('https://github.com/example/docs/pull/42')
         self.assertEqual(metadata['target']['ref'], 'refs/pull/42/head')
         self.assertEqual(metadata['repository'], 'https://github.com/example/docs')
+        self.assertEqual(metadata['base']['commit'], 'c' * 40)
+        self.assertEqual(metadata['base']['tip'], 'a' * 40)
 
-        converted = {'base': {'ref': 'main', 'commit': 'a' * 40},
+        converted = {'base': {'ref': 'main', 'commit': 'c' * 40},
                      'target': {'ref': 'refs/pull/42/head', 'commit': 'b' * 40},
                      'settings': {}, 'summary': {'files': 1, 'errors': 0,
                                                 'review': 0, 'xml_changed': 1},
@@ -374,7 +445,7 @@ class ComparisonTests(unittest.TestCase):
             report = compare_pull_request(metadata['url'], patterns=['modules/*.adoc'])
         routed.assert_called_once()
         self.assertEqual(routed.call_args.args[:3],
-                         (metadata['repository'], 'a' * 40, 'refs/pull/42/head'))
+                         (metadata['repository'], 'c' * 40, 'refs/pull/42/head'))
         self.assertEqual(report['target']['ref'], 'PR #42')
         self.assertEqual(report['settings']['workflow'], 'pull_request')
 
@@ -414,13 +485,23 @@ class ComparisonTests(unittest.TestCase):
             stale = repository / 'shallow.lock'
             stale.write_text('interrupted fetch')
             base_sha, target_sha = 'a' * 40, 'b' * 40
+            fetched = set()
+            fetch_count = 0
 
             def fake_git(repo, *args, **_kwargs):
+                nonlocal fetch_count
                 if args[0] == 'ls-remote':
                     return (f'{base_sha}\trefs/heads/base\n'
                             f'{target_sha}\trefs/heads/target\n').encode()
                 if args[0] == 'fetch':
                     self.assertFalse(stale.exists())
+                    fetched.add(args[-1])
+                    fetch_count += 1
+                    return b''
+                if args[0] == 'cat-file':
+                    sha = args[-1].removesuffix('^{commit}')
+                    if sha not in fetched:
+                        raise ValueError('missing object')
                     return b''
                 if args[0] == 'rev-parse':
                     return (args[-1].removesuffix('^{commit}') + '\n').encode()
@@ -430,6 +511,10 @@ class ComparisonTests(unittest.TestCase):
                 resolved = prepare_repository(url, 'base', 'target', cache=cache)
             self.assertEqual(resolved, (repository, base_sha, target_sha))
             self.assertFalse(stale.exists())
+            self.assertEqual(fetch_count, 2)
+            with patch('adoc_dita.repository.git', side_effect=fake_git):
+                self.assertEqual(prepare_repository(url, 'base', 'target', cache=cache), resolved)
+            self.assertEqual(fetch_count, 2)
 
     def test_removed_title_is_an_error_not_a_deletion(self):
         self.write('modules/changed.adoc', 'The document title was removed.\n')

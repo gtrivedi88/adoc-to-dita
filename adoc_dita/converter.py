@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import posixpath
+from copy import deepcopy
 from pathlib import Path
 import re
 import subprocess
@@ -112,6 +113,70 @@ def xml_name(path):
     return str(Path(path).with_suffix(".xml")).replace(os.sep, "/")
 
 
+def preserve_loose_task_steps(source, target):
+    """Keep body elements that dita-convert otherwise skips around task steps.
+
+    Modular-docs procedures sometimes place a lead-in before the first list or
+    a table/code block after it. The generated-task XSLT warns and drops these
+    nodes. Move a lead-in to task context and trailing nodes to the final
+    step's info so conversion remains lossless and schema validation decides
+    whether the resulting placement is valid.
+    """
+    body = source.find("body")
+    taskbody = target.find("taskbody")
+    if body is None or taskbody is None:
+        return set(), 0
+    children = list(body)
+    procedure = next((index for index, node in enumerate(children)
+                      if node.tag == "p" and node.get("outputclass") == "title"
+                      and "".join(node.itertext()).strip() == "Procedure"), None)
+    if procedure is None:
+        return set(), 0
+    contents = []
+    for node in children[procedure + 1:]:
+        if node.tag == "p" and node.get("outputclass") == "title":
+            break
+        contents.append(node)
+    lists = [node for node in contents if node.tag in {"ol", "ul"}]
+    if not lists:
+        return set(), 0
+    primary = lists[0]
+    before = [node for node in contents[:contents.index(primary)]
+              if node.tag != "example"]
+    after = [node for node in contents[contents.index(primary) + 1:]
+             if node.tag != "example"]
+    moved = 0
+    if before:
+        context = taskbody.find("context")
+        if context is None:
+            context = etree.Element("context")
+            steps = taskbody.find("steps")
+            if steps is None:
+                steps = taskbody.find("steps-unordered")
+            taskbody.insert(taskbody.index(steps) if steps is not None else 0, context)
+        for node in before:
+            context.append(deepcopy(node))
+            moved += 1
+    if after:
+        steps = taskbody.find("steps")
+        if steps is None:
+            steps = taskbody.find("steps-unordered")
+        last_step = steps[-1] if steps is not None and len(steps) else None
+        if last_step is not None:
+            info = last_step.find("info")
+            if info is None:
+                info = etree.SubElement(last_step, "info")
+            for node in after:
+                info.append(deepcopy(node))
+                moved += 1
+    handled = set()
+    if moved:
+        handled.add("WARNING: Non-list elements found in steps, skipping...")
+    if len(lists) > 1 and all(node in before or node in after for node in lists[1:]):
+        handled.add("WARNING: Extra list elements found in steps, skipping...")
+    return handled, moved
+
+
 def finalize(raw, kind="auto", references=None):
     result = {k: v for k, v in raw.items() if k != "content_type"}
     result["output_path"] = xml_name(raw["path"])
@@ -132,14 +197,21 @@ def finalize(raw, kind="auto", references=None):
         result.update(status="error", xml=None)
         return result
     try:
-        root = etree.fromstring(raw["xml"].encode(), PARSER())
-        if root.tag != "topic":
+        source_root = etree.fromstring(raw["xml"].encode(), PARSER())
+        if source_root.tag != "topic":
             raise ValueError("Converter did not return a complete DITA topic")
         transform = getattr(dita_convert, "to_" + result["topic_type"] + "_generated")
-        transformed = transform(root)
-        for error in transform.error_log:
-            diagnostics.append({"severity": "error", "message": str(error.message)})
+        transformed = transform(source_root)
         root = transformed.getroot()
+        handled_messages, moved = (preserve_loose_task_steps(source_root, root)
+                                   if result["topic_type"] == "task" else (set(), 0))
+        for error in transform.error_log:
+            message = str(error.message)
+            if message not in handled_messages:
+                diagnostics.append({"severity": "error", "message": message})
+        if moved:
+            diagnostics.append({"severity": "warning", "message":
+                                f"Preserved {moved} non-list procedure element(s) in task context or step info."})
         missing_attributes.update(unresolved_documentation_attributes(root))
         if missing_attributes:
             diagnostics.extend({"severity": "error", "message": f"Unresolved documentation attribute: {name}"}

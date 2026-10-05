@@ -6,6 +6,8 @@ A local tool for three jobs:
 2. Compare two Git branches, tags, or commits and download the affected topics, before/after XML, and readable diffs.
 3. Paste a public GitHub pull request URL and download DITA XML for every changed or dependency-affected topic.
 
+See [TESTING.md](TESTING.md) for automated coverage and pinned live results against `openshift/openshift-docs`.
+
 Supports **concept**, **task (procedure)**, and **reference** topics. No Vale, AI service, AEM connection, account, or database is required. The browser interface runs on your computer; GitHub access is only used when you choose a remote repository.
 
 ## Start
@@ -94,7 +96,7 @@ Open **03 Convert pull request** and paste a public URL such as `https://github.
 
 Leave **Topic paths** blank to process the complete PR. The attributes controls behave like release comparison: use a repository-relative path to read the file independently at the base and PR commits, upload one `.adoc` file to apply it to both, or rely on automatic `artifacts/attributes.adoc` detection. Each successful topic exposes its complete target XML in the page. The ZIP contains target XML under `after/`, base XML when available, source and XML diffs, `report.html`, and `report.json`.
 
-The report records the PR number, title, URL, base/head commit IDs, and conversion settings. If the PR head changes while a job is starting, the run stops instead of mixing snapshots. A hosted deployment requires outbound HTTPS access to `api.github.com` and `github.com`. Set an optional `GITHUB_TOKEN` environment variable on busy shared deployments to use GitHub's authenticated API rate limit; the token is never included in reports.
+The report records the PR number, title, URL, exact merge-base/head commit IDs, the current base tip, and conversion settings. Using the merge base makes the result match the changes introduced by the PR even when its base branch advances. If the PR head changes while a job is starting, the run stops instead of mixing snapshots. A hosted deployment requires outbound HTTPS access to `api.github.com` and `github.com`. Set an optional `GITHUB_TOKEN` environment variable on busy shared deployments to use GitHub's authenticated API rate limit; the token is never included in reports.
 
 ## CLI
 

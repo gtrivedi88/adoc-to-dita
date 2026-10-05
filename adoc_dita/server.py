@@ -16,16 +16,20 @@ Neither variable is set by default, so `./adoc-dita serve` is unaffected.
 """
 import json
 import os
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import secrets
+import sys
 import threading
+import time
 from urllib.parse import urlsplit, parse_qs
 
 from .cli import parse_attributes
 from .context import convert_standalone
 from .repository import compare, compare_pull_request, pull_request_location, refs
 from .report import zip_report
+from .usage import UsageLogger
 
 
 def serve(port=8765):
@@ -36,21 +40,42 @@ def serve(port=8765):
     jobs = {}
     jobs_lock = threading.Lock()
     conversion_lock = threading.Lock()
+    usage = UsageLogger(os.environ.get("ADOC_DITA_USAGE_LOG") or None, stream=sys.stdout)
     page = (Path(__file__).parent / "index.html").read_text().replace("__TOKEN__", token).encode()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
             pass
 
+        def visitor_id(self):
+            if hasattr(self, "_visitor_id"):
+                return self._visitor_id
+            cookie = SimpleCookie()
+            try:
+                cookie.load(self.headers.get("Cookie", ""))
+                value = cookie.get("adoc_dita_visitor")
+                candidate = value.value if value else ""
+            except Exception:
+                candidate = ""
+            if not candidate or len(candidate) > 128 or not all(c.isalnum() or c in "-_" for c in candidate):
+                candidate = secrets.token_urlsafe(24)
+                self._set_visitor_cookie = True
+            self._visitor_id = candidate
+            return candidate
+
         def respond(self, status, data, kind="application/json; charset=utf-8", filename=None):
             if not isinstance(data, bytes):
                 data = json.dumps(data, ensure_ascii=False).encode()
+            self.visitor_id()
             self.send_response(status)
             self.send_header("Content-Type", kind)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Content-Security-Policy", f"default-src 'self'; script-src 'nonce-{token}'; style-src 'unsafe-inline'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'")
+            if getattr(self, "_set_visitor_cookie", False):
+                self.send_header("Set-Cookie", "adoc_dita_visitor=" + self._visitor_id
+                                 + "; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax")
             if filename:
                 self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
             self.end_headers()
@@ -101,6 +126,7 @@ def serve(port=8765):
                         raise ValueError("Hosted comparisons require a public https://github.com/OWNER/REPO URL")
                     return self.respond(200, {"refs": refs(data["repository"])})
                 if self.path == "/api/convert":
+                    started = time.monotonic()
                     with conversion_lock:
                         options = dict(filename=data.get("filename", "document.adoc"),
                                        attributes=parse_attributes(data.get("attributes", "").splitlines()), kind=data.get("type", "auto"))
@@ -109,6 +135,10 @@ def serve(port=8765):
                             raise ValueError("A hosted conversion cannot read a path on the server. Upload the attributes .adoc file instead.")
                         result = convert_standalone(data['source'], **options, attribute_file=attribute_file,
                                                     attribute_text=data.get('attribute_text', ''))
+                    usage.record("convert", result.get("status", "unknown"), self.visitor_id(),
+                                 (time.monotonic() - started) * 1000,
+                                 xml_files=int(bool(result.get("xml"))),
+                                 diagnostics=len(result.get("diagnostics", [])))
                     return self.respond(200, result)
                 if self.path in ("/api/compare", "/api/pull-request"):
                     pull_request = self.path == "/api/pull-request"
@@ -153,6 +183,8 @@ def serve(port=8765):
                         options.update(repository=repository, base=data["base"], target=data["target"])
                         operation = compare
                         starting = "Starting comparison…"
+                    visitor_id = self.visitor_id()
+                    started = time.monotonic()
                     with jobs_lock:
                         if any(job["status"] == "running" for job in jobs.values()):
                             return self.respond(409, {"error": "A comparison is already running"})
@@ -174,11 +206,22 @@ def serve(port=8765):
                                 timeline = jobs[job_id]["timeline"] + ["Comparison complete. ZIP ready to download."]
                                 jobs[job_id] = {"status": "complete", "message": timeline[-1],
                                                 "timeline": timeline, "report": report}
+                            summary = report.get("summary", {})
+                            errors = (summary.get("target_errors", 0) if pull_request
+                                      else summary.get("errors", 0))
+                            usage.record("pull_request" if pull_request else "compare",
+                                         "complete_with_errors" if errors else "complete",
+                                         visitor_id, (time.monotonic() - started) * 1000,
+                                         topics=summary.get("files", 0), errors=errors,
+                                         xml_files=(summary.get("target_xml", 0) if pull_request
+                                                    else summary.get("xml_changed", 0)))
                         except Exception as error:
                             with jobs_lock:
                                 timeline = jobs[job_id]["timeline"] + ["Comparison failed."]
                                 jobs[job_id] = {"status": "error", "message": timeline[-1],
                                                 "timeline": timeline, "error": str(error)}
+                            usage.record("pull_request" if pull_request else "compare", "failed",
+                                         visitor_id, (time.monotonic() - started) * 1000)
                     threading.Thread(target=work, daemon=True).start()
                     return self.respond(202, {"id": job_id})
                 return self.respond(404, {"error": "Not found"})

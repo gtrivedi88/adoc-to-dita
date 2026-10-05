@@ -56,6 +56,9 @@ def main(argv=None):
     listing.add_argument("repository")
     server = sub.add_parser("serve", help="Open the local browser interface")
     server.add_argument("--port", type=int, default=8765)
+    usage = sub.add_parser("usage", help="Summarize anonymous hosted usage events")
+    usage.add_argument("log", help="JSONL file, or captured application stdout")
+    usage.add_argument("--json", action="store_true", help="Print the complete summary as JSON")
     args = parser.parse_args(argv)
     try:
         if args.command == "serve":
@@ -64,6 +67,18 @@ def main(argv=None):
             return 0
         if args.command == "refs":
             print("\n".join(refs(args.repository)))
+            return 0
+        if args.command == "usage":
+            from .usage import summarize_usage_file
+            summary = summarize_usage_file(args.log)
+            if args.json:
+                print(json.dumps(summary, indent=2, ensure_ascii=False))
+            else:
+                print(f"Uses: {summary['uses']}")
+                print(f"Anonymous users: {summary['anonymous_users']}")
+                for workflow, values in summary["workflows"].items():
+                    outcomes = ", ".join(f"{name}={count}" for name, count in values["outcomes"].items()) or "none"
+                    print(f"{workflow}: {values['uses']} uses, {values['anonymous_users']} users ({outcomes})")
             return 0
         attributes = parse_attributes(args.attribute)
         if args.command == "convert":

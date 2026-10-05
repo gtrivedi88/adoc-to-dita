@@ -16,11 +16,15 @@ from adoc_dita.converter import ROOT
 
 class ServerEndToEndTests(unittest.TestCase):
     def setUp(self):
+        self.usage_temp = tempfile.TemporaryDirectory()
+        self.usage_log = Path(self.usage_temp.name) / 'usage.jsonl'
+        self.cookie = None
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))
             self.port = listener.getsockname()[1]
         env = dict(os.environ, ADOC_DITA_BIND_HOST='127.0.0.1',
-                   ADOC_DITA_ALLOWED_HOSTS='converter.example.test')
+                   ADOC_DITA_ALLOWED_HOSTS='converter.example.test',
+                   ADOC_DITA_USAGE_LOG=str(self.usage_log))
         self.server = subprocess.Popen(
             [str(ROOT / 'adoc-dita'), 'serve', '--port', str(self.port)],
             cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -28,9 +32,10 @@ class ServerEndToEndTests(unittest.TestCase):
         )
         for _ in range(80):
             try:
-                status, _, body = self.request('GET', '/')
+                status, headers, body = self.request('GET', '/')
                 if status == 200:
                     self.page = body.decode()
+                    self.cookie = headers.get('Set-Cookie').split(';', 1)[0]
                     break
             except OSError:
                 pass
@@ -48,8 +53,9 @@ class ServerEndToEndTests(unittest.TestCase):
             self.server.kill()
             self.server.wait(timeout=5)
         self.server.stdout.close()
+        self.usage_temp.cleanup()
 
-    def request(self, method, path, *, host=None, origin=None, token=None, data=None):
+    def request(self, method, path, *, host=None, origin=None, token=None, data=None, cookie=None):
         connection = http.client.HTTPConnection('127.0.0.1', self.port, timeout=30)
         headers = {}
         if host:
@@ -58,6 +64,9 @@ class ServerEndToEndTests(unittest.TestCase):
             headers['Origin'] = origin
         if token:
             headers['X-App-Token'] = token
+        selected_cookie = self.cookie if cookie is None else cookie
+        if selected_cookie:
+            headers['Cookie'] = selected_cookie
         body = None
         if data is not None:
             body = json.dumps(data).encode()
@@ -67,6 +76,30 @@ class ServerEndToEndTests(unittest.TestCase):
         content = response.read()
         connection.close()
         return response.status, response.headers, content
+
+    def test_usage_log_counts_uses_and_anonymous_browsers_without_content(self):
+        token = re.search(r'<script nonce="([^"]+)">', self.page).group(1)
+        source = ':_mod-docs-content-type: CONCEPT\n\n= Private title\n\nPrivate body.\n'
+        payload = {'source': source, 'filename': 'con-private.adoc',
+                   'attributes': '', 'type': 'auto'}
+        for cookie in [None, 'adoc_dita_visitor=second-random-browser']:
+            status, _, body = self.request('POST', '/api/convert', token=token,
+                                           data=payload, cookie=cookie)
+            self.assertEqual(status, 200, body)
+        events = [json.loads(line) for line in self.usage_log.read_text().splitlines()]
+        self.assertEqual(len(events), 2)
+        self.assertEqual({event['workflow'] for event in events}, {'convert'})
+        self.assertEqual(len({event['anonymous_user'] for event in events}), 2)
+        self.assertNotIn('Private title', self.usage_log.read_text())
+        self.assertNotIn('con-private.adoc', self.usage_log.read_text())
+
+        result = subprocess.run([str(ROOT / 'adoc-dita'), 'usage', self.usage_log, '--json'],
+                                cwd=ROOT, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        summary = json.loads(result.stdout)
+        self.assertEqual(summary['uses'], 2)
+        self.assertEqual(summary['anonymous_users'], 2)
+        self.assertEqual(summary['workflows']['convert']['uses'], 2)
 
     def test_local_and_hosted_origins_and_conversion(self):
         self.assertIn('<title>AsciiDoc → DITA</title>', self.page)
@@ -168,6 +201,11 @@ class ServerEndToEndTests(unittest.TestCase):
             path_item = path_job['report']['files'][0]
             self.assertIn('Absolute path product', path_item['before']['xml'])
             self.assertIn('Absolute path product', path_item['after']['xml'])
+            events = [json.loads(line) for line in self.usage_log.read_text().splitlines()]
+            compare_events = [event for event in events if event['workflow'] == 'compare']
+            self.assertEqual(len(compare_events), 2)
+            self.assertEqual({event['outcome'] for event in compare_events}, {'complete'})
+            self.assertEqual({event['topics'] for event in compare_events}, {1})
 
 
 if __name__ == '__main__':

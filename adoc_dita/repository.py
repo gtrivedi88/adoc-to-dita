@@ -20,9 +20,17 @@ from .converter import ROOT, convert_files
 from .report import file_diff
 
 
+INCLUDE_DIRECTIVE = re.compile(r"^\s*include::([^\[]+)\[", re.M)
+ATTRIBUTE_DEFINITION = re.compile(r"^:([A-Za-z_][A-Za-z0-9_-]*):\s*(.*?)\s*$", re.M)
+
+
 def git(repo, *args, timeout=180):
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_CONFIG_NOSYSTEM="1")
-    run = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, env=env, timeout=timeout)
+    try:
+        run = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, env=env, timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        operation = args[0] if args else "operation"
+        raise ValueError(f"Git {operation} timed out after {timeout} seconds. Check GitHub connectivity and try again.") from error
     if run.returncode:
         raise ValueError(run.stderr.decode(errors="replace").strip() or "Git command failed")
     return run.stdout
@@ -56,44 +64,66 @@ def pull_request_location(value):
 def pull_request_metadata(value):
     owner, repository, number = pull_request_location(value)
     api_url = f"https://api.github.com/repos/{owner}/{repository}/pulls/{number}"
-    request = Request(api_url, headers={
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "adoc-dita/0.2.0",
-        "X-GitHub-Api-Version": "2022-11-28",
-    })
-    if token := os.environ.get("GITHUB_TOKEN", "").strip():
-        request.add_header("Authorization", "Bearer " + token)
+    def github_json(url, description):
+        request = Request(url, headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "adoc-dita/0.2.0",
+            "X-GitHub-Api-Version": "2022-11-28",
+        })
+        if token := os.environ.get("GITHUB_TOKEN", "").strip():
+            request.add_header("Authorization", "Bearer " + token)
+        try:
+            with urlopen(request, timeout=30) as response:
+                payload = response.read(1024 * 1024 + 1)
+        except HTTPError as error:
+            if error.code == 404:
+                raise ValueError(f"GitHub {description} not found or not public") from error
+            if error.code == 403:
+                raise ValueError("GitHub API rate limit reached. Try again later.") from error
+            raise ValueError(f"GitHub could not load the {description} (HTTP {error.code})") from error
+        except URLError as error:
+            raise ValueError(f"Could not reach GitHub: {error.reason}") from error
+        if len(payload) > 1024 * 1024:
+            raise ValueError(f"GitHub {description} response exceeded 1 MB")
+        try:
+            return json.loads(payload)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"GitHub returned an invalid {description} response") from error
+
+    data = github_json(api_url, "pull request")
     try:
-        with urlopen(request, timeout=30) as response:
-            payload = response.read(1024 * 1024 + 1)
-    except HTTPError as error:
-        if error.code == 404:
-            raise ValueError("GitHub pull request not found or not public") from error
-        if error.code == 403:
-            raise ValueError("GitHub API rate limit reached. Try again later.") from error
-        raise ValueError(f"GitHub could not load the pull request (HTTP {error.code})") from error
-    except URLError as error:
-        raise ValueError(f"Could not reach GitHub: {error.reason}") from error
-    if len(payload) > 1024 * 1024:
-        raise ValueError("GitHub pull request response exceeded 1 MB")
-    try:
-        data = json.loads(payload)
         base = data["base"]
         head = data["head"]
         full_name = data["base"]["repo"]["full_name"]
-    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        base_sha, head_sha = str(base["sha"]), str(head["sha"])
+    except (KeyError, TypeError) as error:
         raise ValueError("GitHub returned an invalid pull request response") from error
     if full_name.casefold() != f"{owner}/{repository}".casefold():
         raise ValueError("Pull request base repository does not match its URL")
+    if not all(re.fullmatch(r"[0-9a-fA-F]{40}", sha) for sha in [base_sha, head_sha]):
+        raise ValueError("GitHub returned invalid pull request commits")
+    # GitHub's PR file list is based on the common ancestor, not the current
+    # base branch tip. Ask the compare endpoint for that exact merge base. A
+    # page beyond the commit list omits file patches and keeps this response
+    # bounded even for very large documentation pull requests.
+    comparison = github_json(
+        f"https://api.github.com/repos/{owner}/{repository}/compare/{base_sha}...{head_sha}?per_page=1&page=2147483647",
+        "pull request comparison")
+    try:
+        merge_base = str(comparison["merge_base_commit"]["sha"])
+    except (KeyError, TypeError) as error:
+        raise ValueError("GitHub returned an invalid pull request comparison") from error
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", merge_base):
+        raise ValueError("GitHub returned an invalid pull request merge base")
     return {
         "url": f"https://github.com/{owner}/{repository}/pull/{number}",
         "number": number,
         "title": str(data.get("title") or f"Pull request #{number}"),
         "state": str(data.get("state") or "unknown"),
         "repository": f"https://github.com/{owner}/{repository}",
-        "base": {"ref": str(base["ref"]), "commit": str(base["sha"])},
+        "base": {"ref": str(base["ref"]), "commit": merge_base, "tip": base_sha},
         "target": {"ref": f"refs/pull/{number}/head", "label": str(head.get("label") or "PR head"),
-                   "commit": str(head["sha"])},
+                   "commit": head_sha},
     }
 
 
@@ -157,7 +187,10 @@ def prepare_repository(value, base, target, cache=None):
             else:
                 raise ValueError(f"Reference not found: {ref}")
             # Fetch only the chosen snapshot, pinned to the advertised object ID.
-            git(repo, "fetch", "--no-tags", "--depth=1", url, sha)
+            try:
+                git(repo, "cat-file", "-e", sha + "^{commit}", timeout=30)
+            except ValueError:
+                git(repo, "fetch", "--no-tags", "--depth=1", url, sha)
             return resolve(repo, sha)
 
         base_sha, target_sha = fetch(base), fetch(target)
@@ -234,6 +267,80 @@ def topic_paths(root, patterns, kind="auto"):
     return selected
 
 
+def source_dependencies(root, path, attributes=None, collected_attributes=None):
+    """Return a conservative static include closure without running a build."""
+    root = Path(root).resolve()
+    initial = Path(path)
+    known = {str(name): str(value) for name, value in (attributes or {}).items()}
+    dependencies, visited = set(), set()
+
+    def inspect(relative, inherited):
+        relative = PurePosixPath(relative).as_posix()
+        if relative in visited:
+            return
+        visited.add(relative)
+        file = root.joinpath(*PurePosixPath(relative).parts)
+        if not file.is_file() or not file.resolve().is_relative_to(root):
+            return
+        try:
+            text = file.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return
+        local = dict(inherited)
+        # This intentionally over-approximates conditional definitions. Extra
+        # candidates cost conversion time; missing a dependency would be wrong.
+        for name, value in ATTRIBUTE_DEFINITION.findall(text):
+            local.setdefault(name, value)
+            if collected_attributes is not None:
+                collected_attributes.setdefault(name, value)
+        local.update(known)
+        local.update(docdir=PurePosixPath(relative).parent.as_posix(),
+                     docname=PurePosixPath(relative).stem, docfile=relative)
+        for target in INCLUDE_DIRECTIVE.findall(text):
+            expanded = target.strip()
+            for _ in range(8):
+                updated = re.sub(r"\{([A-Za-z_][A-Za-z0-9_-]*)\}",
+                                 lambda match: local.get(match.group(1), match.group(0)), expanded)
+                if updated == expanded:
+                    break
+                expanded = updated
+            if "{" in expanded or re.match(r"^[a-z][a-z0-9+.-]*:", expanded, re.I):
+                continue
+            candidate = (file.parent / expanded).resolve()
+            if not candidate.is_relative_to(root) or not candidate.exists():
+                candidate = (root / expanded).resolve()
+            if not candidate.is_relative_to(root):
+                continue
+            dependency = candidate.relative_to(root).as_posix()
+            dependencies.add(dependency)
+            inspect(dependency, local)
+
+    inspect(initial, known)
+    dependencies.discard(initial.as_posix())
+    return dependencies
+
+
+def affected_topics(root, selected, touched, attribute_files, attributes=None):
+    """Narrow a snapshot to directly changed and include-affected topics."""
+    selected, touched = set(selected), set(touched)
+    affected = selected & touched
+    shared_dependencies = set()
+    shared_attributes = {str(name): str(value) for name, value in (attributes or {}).items()}
+    for path in attribute_files:
+        shared_dependencies.add(path)
+        shared_dependencies.update(source_dependencies(root, path, shared_attributes,
+                                                       collected_attributes=shared_attributes))
+    if shared_dependencies & touched:
+        return selected
+    for path in selected - affected:
+        if not (Path(root) / path).is_file():
+            continue
+        dependencies = source_dependencies(root, path, shared_attributes) | shared_dependencies
+        if dependencies & touched:
+            affected.add(path)
+    return affected
+
+
 def compare(repository, base, target, *, patterns=None, attributes=None, attribute_files=None,
             attribute_text="", attribute_filename=None, kind="auto", progress=None, guide=None):
     progress = progress or (lambda message: None)
@@ -288,6 +395,12 @@ def compare(repository, base, target, *, patterns=None, attributes=None, attribu
             if uploaded_path:
                 files.append(uploaded_path)
             snapshot_attribute_files[root] = files
+        if not guide:
+            progress("Mapping changed and dependency-affected topics…")
+            selected = (affected_topics(roots[0], selected, touched,
+                                        snapshot_attribute_files[roots[0]], attributes)
+                        | affected_topics(roots[1], selected, touched,
+                                          snapshot_attribute_files[roots[1]], attributes))
         guide_data = {}
         if guide:
             from .context import RepositoryContext, convert_repository_files
@@ -373,9 +486,9 @@ def compare_pull_request(pull_request_url, *, patterns=None, attributes=None, at
     progress = progress or (lambda message: None)
     progress("Resolving the GitHub pull request…")
     metadata = pull_request_metadata(pull_request_url)
-    # GitHub's PR base SHA is the comparison base for this PR. The named base
-    # branch can advance independently and must not pull unrelated later work
-    # into the conversion.
+    # GitHub's merge base is the comparison base for this PR. The named base
+    # branch can advance independently and must not turn those later changes
+    # into apparent PR deletions or modifications.
     report = compare(metadata["repository"], metadata["base"]["commit"], metadata["target"]["ref"],
                      patterns=patterns, attributes=attributes, attribute_files=attribute_files,
                      attribute_text=attribute_text, attribute_filename=attribute_filename,
